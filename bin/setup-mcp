@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# One-time (per-machine) registration of MCP servers used by this project.
+# Registrations persist in sbx state across sessions — you don't need to re-run
+# this unless you want to update the set. Safe to re-run: `sbx mcp add` is
+# idempotent and overwrites the existing entry.
+#
+# Prereqs:
+#   - sbx installed (brew install docker/tap/sbx)
+#   - `sbx login`
+#   - SBX_MCP_URL exported in the shell that started the sbx daemon
+#     (Docker staff: `export SBX_MCP_URL=https://gateway.docker.com`,
+#      then `sbx daemon stop` so it restarts with the new value)
+#   - Node.js on PATH (the two servers below are npx-based local stdio)
+#   - For the github server: GITHUB_TOKEN in the daemon's environment.
+#     Simplest way: `export GITHUB_TOKEN=$(gh auth token); sbx daemon stop`
+#     before running `claude`. See the "GitHub token" section in
+#     https://docs.docker.com/ai/sandboxes/agents/claude-code/ for the
+#     alternative (sbx secret set -g github, which covers the `gh` CLI
+#     inside the sandbox but NOT this host-side MCP subprocess).
+
+set -euo pipefail
+
+if ! command -v sbx >/dev/null; then
+  echo "sbx not found on PATH. Install: brew install docker/tap/sbx" >&2
+  exit 127
+fi
+
+if [ -z "${SBX_MCP_URL:-}" ]; then
+  echo "SBX_MCP_URL is not set. Export it and restart the daemon first:" >&2
+  echo "  export SBX_MCP_URL=https://gateway.docker.com" >&2
+  echo "  sbx daemon stop" >&2
+  exit 1
+fi
+
+# GitHub — reference server from @modelcontextprotocol.
+# Reads GITHUB_TOKEN from the daemon's environment.
+sbx mcp add github \
+  --command npx \
+  --args "@modelcontextprotocol/server-github"
+
+# Context7 — Upstash's live library-docs MCP.
+# No auth required.
+sbx mcp add context7 \
+  --command npx \
+  --args "-y" --args "@upstash/context7-mcp"
+
+echo
+echo "Registered MCP servers:"
+sbx mcp ls
+echo
+echo "To use them in a sandbox, launch with --static-mcp:"
+echo "  sbx run claude --static-mcp github,context7"

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Project-local wrapper: run Claude Code inside a Docker sbx sandbox.
+# Docs: https://docs.docker.com/ai/sandboxes/agents/claude-code/
+#
+# Inside sbx, the default startup command is `claude --dangerously-skip-permissions`,
+# so nothing extra is needed on that front. Args passed here are forwarded to
+# `sbx run claude` and appended after the defaults when they start with `-`.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+fail() {
+  echo "✗ $1" >&2
+  echo >&2
+  echo "  Run ./bin/onboard for a guided walkthrough." >&2
+  exit 1
+}
+
+# --- preflight (fast, no network) ---
+
+command -v sbx >/dev/null \
+  || fail "sbx not installed. brew install docker/tap/sbx"
+
+[ -n "${SBX_MCP_URL:-}" ] \
+  || fail "SBX_MCP_URL not set. MCP won't work until the daemon sees this env var."
+
+# Required MCP servers must be registered before --static-mcp will accept them.
+missing=()
+registered="$(sbx mcp ls 2>/dev/null || true)"
+for srv in github context7; do
+  grep -qE "(^|[[:space:]])${srv}([[:space:]]|$)" <<<"$registered" || missing+=("$srv")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  fail "MCP servers not registered: ${missing[*]}. Register with ./bin/setup-mcp"
+fi
+
+# --- runtime setup ---
+
+# Refresh the `github` service secret from the host's authenticated gh CLI.
+# Stored in the macOS Keychain, picked up at sandbox creation.
+# If your GH token rotates mid-session, run `sbx rm <name>` and re-launch.
+if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
+  echo "$(gh auth token)" | sbx secret set -g github >/dev/null
+fi
+
+exec sbx run claude --static-mcp github,context7 "$@"

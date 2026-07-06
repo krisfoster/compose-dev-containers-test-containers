@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Onboarding walkthrough for this repo's Claude Code + sbx setup.
+# Idempotent — re-run any time to see what's left.
+#
+# Prints ✓ for each satisfied check, ✗ + a fix hint for each failing one.
+# Exits 0 when everything is green, non-zero otherwise.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+PASS=0
+FAIL=0
+FIXES=()
+
+check() {
+  local name="$1" cmd="$2" fix="$3"
+  if eval "$cmd" >/dev/null 2>&1; then
+    printf '  \033[32m✓\033[0m  %s\n' "$name"
+    PASS=$((PASS + 1))
+  else
+    printf '  \033[31m✗\033[0m  %s\n' "$name"
+    printf '     fix: %s\n' "$fix"
+    FAIL=$((FAIL + 1))
+    FIXES+=("$fix")
+  fi
+}
+
+section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+section "Tools"
+check "sbx installed"    "command -v sbx"    "brew install docker/tap/sbx"
+check "gh installed"     "command -v gh"     "brew install gh"
+check "direnv installed" "command -v direnv" "brew install direnv"
+check "Node.js on PATH"  "command -v npx"    "brew install node   # needed for local-stdio MCP servers"
+
+section "Sign-ins"
+check "gh authenticated"     "gh auth token"    "gh auth login"
+# sbx login state isn't checked directly — sbx ls can hang on daemon issues.
+# If not logged in, the MCP checks below will fail with a clear sbx error.
+
+section "Environment"
+check "SBX_MCP_URL exported" "[ -n \"\${SBX_MCP_URL:-}\" ]" \
+  "export SBX_MCP_URL=https://gateway.docker.com   # add to shell rc, then: sbx daemon stop"
+check "GITHUB_TOKEN exported (for github MCP stdio)" "[ -n \"\${GITHUB_TOKEN:-}\" ]" \
+  "export GITHUB_TOKEN=\$(gh auth token)   # add to shell rc or .envrc.local, then: sbx daemon stop"
+
+section "direnv"
+check "hooked into shell" "[ -n \"\${DIRENV_DIR:-}\" ]" \
+  "hook direnv into your shell: https://direnv.net/docs/hook.html"
+check ".envrc allowed" \
+  "direnv status | grep -q 'Found RC allowed true'" \
+  "direnv allow   # from the repo root"
+
+section "MCP servers registered"
+if [ -n "${SBX_MCP_URL:-}" ] && command -v sbx >/dev/null; then
+  registered="$(sbx mcp ls 2>/dev/null || true)"
+  for srv in github context7; do
+    check "  $srv" \
+      "grep -qE '(^|[[:space:]])${srv}([[:space:]]|\$)' <<<\"\$registered\"" \
+      "./bin/setup-mcp   # registers all required MCP servers"
+  done
+else
+  printf '  \033[33m…\033[0m  skipped (sbx or SBX_MCP_URL not ready)\n'
+fi
+
+printf '\n\033[1mResult:\033[0m %d passed, %d failed\n' "$PASS" "$FAIL"
+if [ "$FAIL" -eq 0 ]; then
+  printf '\nAll checks green. Run:\n  \033[1mclaude\033[0m\n'
+  exit 0
+else
+  printf '\nFix the ✗ items above (commands are shown next to each), then re-run:\n'
+  printf '  \033[1m./bin/onboard\033[0m\n'
+  exit 1
+fi
