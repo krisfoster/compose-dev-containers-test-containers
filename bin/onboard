@@ -65,6 +65,14 @@ else
   printf '  \033[33m…\033[0m  skipped (sbx or SBX_MCP_URL not ready)\n'
 fi
 
+section "Claude Code plugins"
+# .claude/settings.json only *declares* extraKnownMarketplaces/enabledPlugins —
+# Claude Code does not auto-install from it, so this must be run explicitly
+# (both commands are idempotent; safe to re-run every time).
+check "gsd-core plugin installed" \
+  "claude plugin list 2>/dev/null | grep -q 'gsd-core@gsd-core'" \
+  "claude plugin marketplace add open-gsd/gsd-core --scope project && claude plugin install gsd-core@gsd-core --scope project"
+
 printf '\n\033[1mResult:\033[0m %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -eq 0 ]; then
   printf '\nAll checks green. Run:\n  \033[1mclaude\033[0m\n'

@@ -1,0 +1,25 @@
+schemaVersion: "1"
+kind: mixin
+name: gsd-plugin
+displayName: GSD Core plugin
+description: >-
+  Installs the gsd-core Claude Code plugin marketplace and plugin declared in
+  .claude/settings.json. Claude Code does not auto-install plugins from that
+  declaration, and plugin state lives in the sandbox's own container
+  filesystem, so this must run at every sandbox creation.
+
+network:
+  # `claude plugin marketplace add` clones the marketplace repo from GitHub;
+  # `claude plugin install` may fetch metadata via the API.
+  allowedDomains:
+    - github.com
+    - api.github.com
+
+commands:
+  install:
+    - command: |
+        set -euo pipefail
+        claude plugin marketplace add open-gsd/gsd-core --scope project
+        claude plugin install gsd-core@gsd-core --scope project
+      user: "1000"
+      description: Install the gsd-core Claude Code plugin

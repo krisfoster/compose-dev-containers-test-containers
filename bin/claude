@@ -62,11 +62,16 @@ if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
   sbx secret set -g -f -t "$(gh auth token)" github >/dev/null
 fi
 
-# --static-mcp is a create-time flag; sbx rejects it when re-attaching to an
-# existing sandbox. Only pass it on the first run.
+# --static-mcp and --kit are create-time flags; sbx rejects them when
+# re-attaching to an existing sandbox. Only pass them on the first run.
+# The gsd-plugin kit installs the gsd-core Claude Code plugin at creation
+# time — .claude/settings.json only *declares* it; Claude Code doesn't
+# auto-install from that declaration, and plugin state lives in the
+# sandbox's own container filesystem, so it never survives recreation
+# otherwise.
 SANDBOX_NAME="claude-$(basename "$REPO_ROOT")"
 if sbx ls -q 2>/dev/null | grep -qxF "$SANDBOX_NAME"; then
   exec sbx run claude "$@"
 else
-  exec sbx run claude --static-mcp github,context7 "$@"
+  exec sbx run claude --static-mcp github,context7 --kit "$REPO_ROOT/kits/gsd-plugin" "$@"
 fi
