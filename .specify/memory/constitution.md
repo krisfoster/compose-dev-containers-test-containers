@@ -1,15 +1,18 @@
 <!--
 Sync Impact Report
-Version change: (template placeholders) -> 1.0.0
-Modified principles: (initial ratification, none modified)
+Version change: 1.0.0 -> 1.1.0
+Modified principles: (none renamed or removed)
 Added sections:
-  Core Principles: 5 principles (I. Demo-First Delivery, II. Compose-Orchestrated Reproducibility,
-    III. Testcontainers Over Mocks for Boundary Tests, IV. Visible-in-the-Browser Definition of
-    Done, V. Vendored-Code Hygiene)
-  Technology Stack (runtime, orchestration, testing, tunnels)
-  Development Workflow (spec-kit phase loop, sandbox, aesthetic, attribution)
-  Governance (amendment procedure and semver policy)
+  Technology Stack: new "Interim Static Hosting" carve-out permitting a non-Go static webserver
+    (e.g. nginx) to serve purely static content before a Go backend exists for a given surface,
+    with an explicit sunset condition (retire once a Go backend serves that content).
 Removed sections: (none)
+Rationale: Feature 001-host-webapp-ngrok needs to host the existing static frontend
+  (frontend/game/) before any Go backend exists in this repo. The Technology Stack fixed
+  "Backend: Go" with no carve-out for this pre-backend gap, which /speckit-analyze correctly
+  flagged as an unamended stack change (Governance: "Adding a new runtime dependency ... requires
+  a constitution amendment"). This amendment closes that gap explicitly rather than leaving it as
+  a silently-justified Constitution Check PASS in a feature plan.
 Templates requiring updates:
   OK  .specify/templates/plan-template.md: Constitution Check placeholder is design-compatible;
       gates populate at plan-generation time based on the principles here
@@ -19,6 +22,10 @@ Follow-up TODOs:
   TODO(DEVCONTAINERS): DevContainer definitions arrive in a follow-up phase. Principle II
     already commits to consuming the same compose services, so the amendment when they land
     should be PATCH-level unless a boundary changes.
+  TODO(INTERIM-HOSTING-SUNSET): When a Go backend is introduced that can serve frontend/game/
+    directly, retire the nginx service introduced by 001-host-webapp-ngrok and remove the carve-out
+    below (or narrow it if another surface still needs it). Track this at the time that backend
+    feature is planned.
 -->
 
 # Whale Runner Constitution
@@ -107,6 +114,14 @@ and requires a constitution amendment following the Governance section. Swapping
 the same category (for example, a different HTTP router) is not a stack change but SHOULD be noted
 in the phase spec that introduces it.
 
+**Interim Static Hosting carve-out**: A non-Go static webserver (for example, `nginx:alpine`) MAY
+serve a surface's static assets in compose, but only while no Go backend yet exists to serve that
+surface, and only for content requiring no server-side logic beyond file serving. This exists
+because static frontends (for example, `frontend/game/`) need to be hosted before the Go backend
+that will eventually own that responsibility is built. Once a Go backend is introduced for a given
+surface, that surface's interim static webserver MUST be retired in the same phase that lands the
+backend — this carve-out is a bridge, not a permanent parallel serving path.
+
 ## Development Workflow
 
 Design docs (`crossy.md`, `project.md`) precede implementation. Structured phase work uses the
@@ -147,4 +162,4 @@ plan's Complexity Tracking section before it is accepted.
 
 Runtime guidance for day-to-day work lives in `crossy.md` at the repo root.
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-06
+**Version**: 1.1.0 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-06

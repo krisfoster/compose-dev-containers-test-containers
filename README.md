@@ -84,6 +84,50 @@ bin/claude
 
 Inside the sandbox, Claude Code sees `.claude/settings.json` (GSD plugin, status line), the two MCP servers are pre-loaded, and `gh` inside the sandbox uses the token you forwarded. User-level config from your host `~/.claude` is deliberately not visible; only what's in this repo is.
 
+## Running the app
+
+The web app (`frontend/game/`, a browser-based Crossy Road clone) is hosted via `docker compose`.
+
+**Prerequisites**: Docker Desktop (or Docker Engine + Compose v2). Nothing else to install.
+
+### Run it locally
+
+```bash
+docker compose up -d
+```
+
+Open <http://localhost:8080> — that's it, no `.env` file or other setup required for local play.
+
+Stop it with:
+
+```bash
+docker compose down
+```
+
+### Make it publicly accessible (optional)
+
+Sharing a public URL (e.g. for attendees to join over wifi/cellular data) needs a free
+[ngrok](https://ngrok.com) account and its authtoken:
+
+```bash
+cp .env.example .env           # once
+# edit .env and set NGROK_AUTHTOKEN=<your token>
+docker compose --profile public up -d
+open http://localhost:4040     # shows the current public URL to share
+```
+
+Local play at `localhost:8080` keeps working even if the public tunnel is down or not configured.
+
+### Troubleshooting
+
+- **Port 8080 already in use**: `docker compose up` fails with "port is already allocated". Stop
+  whatever's using it, or set a different `WEB_PORT` in `.env` and retry.
+- **No public URL at `localhost:4040`**: usually a missing/invalid `NGROK_AUTHTOKEN` in `.env`, or
+  the ngrok service isn't running — check with `docker compose --profile public ps`.
+
+Full validation walkthrough (including simulating a port conflict or a tunnel outage) is in
+[`specs/001-host-webapp-ngrok/quickstart.md`](specs/001-host-webapp-ngrok/quickstart.md).
+
 ## References
 
 - Docker Sandboxes: <https://docs.docker.com/ai/sandboxes/>
