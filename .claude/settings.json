@@ -1,4 +1,12 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/statusline.sh\"",
+    "padding": 1
+  },
+  "enabledPlugins": {
+    "gsd-core@gsd-core": true
+  },
   "extraKnownMarketplaces": {
     "gsd-core": {
       "source": {
@@ -6,13 +14,5 @@
         "repo": "open-gsd/gsd-core"
       }
     }
-  },
-  "enabledPlugins": {
-    "gsd-core@gsd-core": true
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/statusline.sh\"",
-    "padding": 1
   }
 }
