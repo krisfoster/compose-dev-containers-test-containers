@@ -73,5 +73,8 @@ SANDBOX_NAME="claude-$(basename "$REPO_ROOT")"
 if sbx ls -q 2>/dev/null | grep -qxF "$SANDBOX_NAME"; then
   exec sbx run claude "$@"
 else
-  exec sbx run claude --static-mcp github,context7 --kit "$REPO_ROOT/kits/gsd-plugin" "$@"
+  exec sbx run claude \
+    --static-mcp github,context7 \
+    --kit "$REPO_ROOT/kits/spec-kit" \
+    "$@"
 fi

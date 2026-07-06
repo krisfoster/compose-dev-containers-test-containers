@@ -1,0 +1,51 @@
+schemaVersion: "1"
+kind: mixin
+name: spec-kit
+displayName: Spec Kit CLI + workspace init
+description: >-
+  Installs GitHub's spec-kit "specify" CLI and initialises the workspace
+  for the Claude Code integration, so /speckit-* skills and the .specify/
+  scaffolding are available in the sandbox immediately.
+  The sandbox base image already ships uv and Python 3.11+, so the CLI
+  install is a single `uv tool install`. The init step is idempotent:
+  it skips when the workspace already contains .specify/, so subsequent
+  sandbox creations do not clobber user edits to constitution.md etc.
+  Files written to the workspace: .claude/skills/speckit-*/, .specify/
+  (templates, scripts, integration manifests, memory/constitution.md).
+  These land in the host repo because the workspace is bind-mounted.
+
+network:
+  # `uv tool install` clones the spec-kit source from github.com; uv then
+  # resolves and downloads Python dependencies via PyPI. `specify init`
+  # itself is offline (assets bundled inside the CLI).
+  allowedDomains:
+    - github.com
+    - api.github.com
+    - pypi.org
+    - files.pythonhosted.org
+
+commands:
+  install:
+    - command: |
+        set -euo pipefail
+        # Pinned to v0.12.4 (published 2026-07-02). Bump this tag on upgrade.
+        uv tool install specify-cli \
+          --from git+https://github.com/github/spec-kit.git@v0.12.4
+        specify version >/dev/null
+      user: "1000"
+      description: Install specify-cli v0.12.4 via uv
+    - command: |
+        set -euo pipefail
+        cd "${WORKSPACE_DIR:?WORKSPACE_DIR not set by sandbox runtime}"
+        # Idempotent: leave an existing spec-kit workspace alone so user
+        # edits to constitution.md and friends survive sandbox rebuilds.
+        if [ -d .specify ]; then
+          echo "spec-kit: .specify/ already present, skipping init"
+          exit 0
+        fi
+        specify init --here \
+          --integration claude \
+          --force \
+          --ignore-agent-tools
+      user: "1000"
+      description: Initialise the workspace for the Claude Code integration
