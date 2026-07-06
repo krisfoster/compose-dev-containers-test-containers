@@ -34,13 +34,39 @@ if [ "${#missing[@]}" -gt 0 ]; then
   fail "MCP servers not registered: ${missing[*]}. Register with ./bin/setup-mcp"
 fi
 
+# Warn if git remotes use SSH. sbx's HTTPS proxy handles GitHub credentials
+# automatically; outbound SSH requires an extra network policy rule plus a
+# key loaded in the host launchd SSH agent (the forwarded 1Password agent
+# does not expose identities inside the sandbox).
+if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  ssh_remotes="$(git -C "$REPO_ROOT" remote -v 2>/dev/null \
+    | awk '$2 ~ /^(git@|ssh:\/\/)/ {print $1}' | sort -u | paste -sd, - || true)"
+  if [ -n "$ssh_remotes" ]; then
+    echo "⚠  git remote(s) use SSH: $ssh_remotes" >&2
+    echo "   sbx routes git through its HTTPS proxy. To switch:" >&2
+    echo "     git remote set-url <name> https://github.com/OWNER/REPO.git" >&2
+  fi
+fi
+
 # --- runtime setup ---
 
 # Refresh the `github` service secret from the host's authenticated gh CLI.
-# Stored in the macOS Keychain, picked up at sandbox creation.
-# If your GH token rotates mid-session, run `sbx rm <name>` and re-launch.
+# Stored in the macOS Keychain. Per Docker Sandboxes docs, a global (-g)
+# service secret is captured when a sandbox is created; if the token rotates,
+# `sbx rm <sandbox>` and re-launch to pick up the new value. Refreshing on
+# every launch is still worthwhile because the next fresh sandbox will use
+# whatever is in the store at creation time.
+# The prior stdin-piped form silently cancelled the overwrite prompt, so this
+# uses `-f -t` for a reliable non-interactive update.
 if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
-  echo "$(gh auth token)" | sbx secret set -g github >/dev/null
+  sbx secret set -g -f -t "$(gh auth token)" github >/dev/null
 fi
 
-exec sbx run claude --static-mcp github,context7 "$@"
+# --static-mcp is a create-time flag; sbx rejects it when re-attaching to an
+# existing sandbox. Only pass it on the first run.
+SANDBOX_NAME="claude-$(basename "$REPO_ROOT")"
+if sbx ls -q 2>/dev/null | grep -qxF "$SANDBOX_NAME"; then
+  exec sbx run claude "$@"
+else
+  exec sbx run claude --static-mcp github,context7 "$@"
+fi
