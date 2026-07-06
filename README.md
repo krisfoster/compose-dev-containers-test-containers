@@ -86,7 +86,8 @@ Inside the sandbox, Claude Code sees `.claude/settings.json` (GSD plugin, status
 
 ## Running the app
 
-The web app (`frontend/game/`, a browser-based Crossy Road clone) is hosted via `docker compose`.
+**Crossy Whale** (`frontend/game/`, a browser-based Crossy Road clone starring the Docker whale)
+is served by a small Go backend (`app/`) via `docker compose`, backed by Redis.
 
 **Prerequisites**: Docker Desktop (or Docker Engine + Compose v2). Nothing else to install.
 
@@ -96,7 +97,9 @@ The web app (`frontend/game/`, a browser-based Crossy Road clone) is hosted via 
 docker compose up -d
 ```
 
-Open <http://localhost:8080> — that's it, no `.env` file or other setup required for local play.
+Open <http://localhost:8080/play> — that's it, no `.env` file or other setup required for local
+play. Local access is never gated behind a QR scan; the QR gate only applies to the public
+endpoint below.
 
 Stop it with:
 
@@ -113,20 +116,29 @@ Sharing a public URL (e.g. for attendees to join over wifi/cellular data) needs 
 cp .env.example .env           # once
 # edit .env and set NGROK_AUTHTOKEN=<your token>
 docker compose --profile public up -d
-open http://localhost:4040     # shows the current public URL to share
+open http://localhost:8080/host   # shows the current QR code, with a button to rotate it
 ```
 
-Local play at `localhost:8080` keeps working even if the public tunnel is down or not configured.
+The public URL only serves the game to a visitor who has scanned the current QR code (or held a
+grant from a previous scan) — anyone else reaching it sees a "scan the QR code to play" message
+instead. Display `/host` on a presenter-only screen: the QR code and its "Rotate" button are not
+exposed on the public endpoint. Local play at `localhost:8080/play` keeps working even if the
+public tunnel is down, not configured, or no QR code has been generated yet.
 
 ### Troubleshooting
 
 - **Port 8080 already in use**: `docker compose up` fails with "port is already allocated". Stop
   whatever's using it, or set a different `WEB_PORT` in `.env` and retry.
-- **No public URL at `localhost:4040`**: usually a missing/invalid `NGROK_AUTHTOKEN` in `.env`, or
-  the ngrok service isn't running — check with `docker compose --profile public ps`.
+- **`/qr.png` returns 503**: no QR code has been generated yet (visit `/host` first) or, once
+  public access is enabled, the public URL isn't available yet — check
+  `docker compose --profile public ps` and `NGROK_AUTHTOKEN` in `.env`.
+- **Scanned QR code doesn't work anymore**: it may have expired (default 15 minutes,
+  `QR_WINDOW_TTL` in `.env`) or been rotated from `/host` — get the current code and re-scan.
 
-Full validation walkthrough (including simulating a port conflict or a tunnel outage) is in
-[`specs/001-host-webapp-ngrok/quickstart.md`](specs/001-host-webapp-ngrok/quickstart.md).
+Full validation walkthroughs are in
+[`specs/001-host-webapp-ngrok/quickstart.md`](specs/001-host-webapp-ngrok/quickstart.md) (local +
+public hosting) and
+[`specs/002-qr-gated-access/quickstart.md`](specs/002-qr-gated-access/quickstart.md) (the QR gate).
 
 ## References
 
