@@ -50,7 +50,7 @@ section "direnv"
 check "hooked into shell" "[ -n \"\${DIRENV_DIR:-}\" ]" \
   "hook direnv into your shell: https://direnv.net/docs/hook.html"
 check ".envrc allowed" \
-  "direnv status | grep -q 'Found RC allowed true'" \
+  "direnv status | grep -qE 'Found RC allowed (true|0)([[:space:]]|\$)'" \
   "direnv allow   # from the repo root"
 
 section "MCP servers registered"
