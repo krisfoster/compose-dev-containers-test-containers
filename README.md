@@ -1,5 +1,7 @@
 # compose-dev-containers-test-containers
 
+![Crossy Whale gameplay](container-obstacles.gif)
+
 Demo app showing how to use Compose, Dev Containers, and Testcontainers together.
 
 ## Develop with Claude
