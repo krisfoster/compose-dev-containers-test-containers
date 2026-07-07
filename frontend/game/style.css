@@ -1,5 +1,16 @@
 @import url('https://fonts.googleapis.com/css?family=Press+Start+2P');
+
+canvas {
+  touch-action: none;
+  display: block;
+}
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@700&display=swap');
+
+html {
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
+}
 
 body {
   margin: 0;
@@ -7,6 +18,9 @@ body {
   font-size: 2em;
   color: white;
   overflow: hidden;
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
 }
 button {
   outline: none;
@@ -105,6 +119,30 @@ button {
 }
 #controls button:first-of-type {
   grid-column: 1/-1;
+}
+
+#rotate-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.92);
+  color: white;
+  font-family: inherit;
+  text-align: center;
+  gap: 16px;
+}
+
+#rotate-prompt p {
+  margin: 0;
+  font-size: 0.5em;
+}
+
+.rp-icon {
+  font-size: 3em;
 }
 
 .credits {

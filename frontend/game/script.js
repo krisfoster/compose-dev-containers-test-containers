@@ -35,7 +35,22 @@ nameFormDOM.addEventListener('submit', (event) => {
   playerName = trimmed;
   nameEntered = true;
   namePromptDOM.style.visibility = 'hidden';
+  const el = document.documentElement;
+  if (el.requestFullscreen) {
+    el.requestFullscreen().catch(() => showFullscreenTip());
+  } else if (el.webkitRequestFullscreen) {
+    el.webkitRequestFullscreen();
+  } else {
+    showFullscreenTip();
+  }
 });
+
+function showFullscreenTip() {
+  const tip = document.getElementById('fullscreen-tip');
+  if (!tip) return;
+  tip.style.display = 'block';
+  setTimeout(() => { tip.style.display = 'none'; }, 6000);
+}
 
 // Best-effort: a failed or slow submission never blocks the Game Over screen or
 // Replay (FR-006; edge case: leaderboard store temporarily unavailable).
@@ -189,6 +204,27 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setSize( window.innerWidth, window.innerHeight );
 document.body.appendChild( renderer.domElement );
+
+function checkOrientation() {
+  const prompt = document.getElementById('rotate-prompt');
+  if (!prompt) return;
+  prompt.style.display = window.innerWidth < window.innerHeight ? 'flex' : 'none';
+}
+
+function onResize() {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.left = window.innerWidth / -2;
+  camera.right = window.innerWidth / 2;
+  camera.top = window.innerHeight / 2;
+  camera.bottom = window.innerHeight / -2;
+  camera.updateProjectionMatrix();
+  checkOrientation();
+}
+
+checkOrientation();
+
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', onResize);
 
 function Texture(width, height, rects) {
   const canvas = document.createElement( "canvas" );
@@ -574,12 +610,16 @@ document.querySelector("#retry").addEventListener("click", () => {
 });
 
 document.getElementById('forward').addEventListener("click", () => move('forward'));
+document.getElementById('forward').addEventListener('touchstart', (e) => { e.preventDefault(); move('forward'); });
 
 document.getElementById('backward').addEventListener("click", () => move('backward'));
+document.getElementById('backward').addEventListener('touchstart', (e) => { e.preventDefault(); move('backward'); });
 
 document.getElementById('left').addEventListener("click", () => move('left'));
+document.getElementById('left').addEventListener('touchstart', (e) => { e.preventDefault(); move('left'); });
 
 document.getElementById('right').addEventListener("click", () => move('right'));
+document.getElementById('right').addEventListener('touchstart', (e) => { e.preventDefault(); move('right'); });
 
 window.addEventListener("keydown", event => {
   if ((event.keyCode == '38') && (!gameOver)) {
