@@ -4,7 +4,7 @@ Running list of known issues and feature ideas. Not prioritized or scheduled —
 
 ## Open
 
-1. **Mobile support.** Make the game work better on phones: tap-to-move controls for the whale, and full-screen landscape play (prompt the user to rotate their phone when in portrait mode).
+1. **Mobile support.** Make the game work better on phones: tap-to-move controls for the whale, and full-screen landscape play (prompt the user to rotate their phone when in portrait mode). Also, update the home page so that the QR code is displayed on the right hand side (2-col layout) and ensure that it refreshes identically to how it does on the QR code page.
 
 2. **Dev container support.** Add support for developing, testing, and running the whole app inside a dev container, with matching VS Code config.
 
@@ -20,7 +20,7 @@ Running list of known issues and feature ideas. Not prioritized or scheduled —
 
 11. **Remove Refences to GDS.** This is no longer used and references to it dhoudl be removed from the project. Instead we use speckit and links to that should be added.
 
-12. **Add CC attributions to the game.** They should be there, but they are not.
+12. **Add CC attributions to the game.** They should be there, but they are not. If allowed, add the CC attributions on the start view of the app, where the user enters their name. Also add a link to the game to get to the leader-board.
 
 13. **Harden the security around Reddis in the App.** Make Reddis only accessible from the go app, with n o publicly exposed endpoints.
 

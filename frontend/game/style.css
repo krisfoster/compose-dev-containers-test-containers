@@ -176,6 +176,31 @@ i {
   color: rgb(65, 65, 65);
 }
 
+#leaderboard-link-prompt {
+  font-size: 0.4em;
+  margin: 0;
+  text-align: center;
+}
+
+#leaderboard-link-prompt a {
+  color: #7ecbff;
+  text-decoration: underline;
+}
+
+#cc-attribution {
+  font-size: 0.28em;
+  margin: 0;
+  text-align: center;
+  max-width: 320px;
+  opacity: 0.75;
+  line-height: 1.5;
+}
+
+#cc-attribution a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 @keyframes colorPop {
   0%, 100% {
     color: white;
