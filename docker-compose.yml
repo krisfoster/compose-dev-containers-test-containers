@@ -8,6 +8,7 @@ services:
       - REDIS_ADDR=redis:6379
       - GRANT_COOKIE_SECRET=${GRANT_COOKIE_SECRET:-dev-only-change-me}
       - QR_WINDOW_TTL=${QR_WINDOW_TTL:-15m}
+      - LEADERBOARD_API_SECRET=${LEADERBOARD_API_SECRET:-dev-only-change-me}
       - NGROK_API_URL=http://ngrok:4040/api/tunnels
       - FRONTEND_DIR=/frontend
       - APP_WEB_PORT=8080

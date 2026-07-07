@@ -1,0 +1,99 @@
+openapi: 3.0.3
+info:
+  title: Crossy Whale Leaderboard API
+  description: >
+    Score-submission surface for Crossy Whale. Covers writing a completed attempt's
+    name and score to the leaderboard store (FR-006 through FR-013 of
+    specs/003-leaderboard-score-submission/spec.md). Reading/browsing the leaderboard
+    is explicitly out of scope for this API version (FR-015) and is left to a future
+    feature.
+  version: "1.0.0"
+servers:
+  - description: Local presenter access (ungated)
+    url: http://localhost:8080
+  - description: Public access, once granted through the QR gate (002-qr-gated-access)
+    url: http://localhost:8081
+paths:
+  /api/leaderboard/scores:
+    post:
+      operationId: submitScore
+      summary: Record one completed game attempt's name and score.
+      description: >
+        Appends a new Leaderboard Entry. Every accepted call creates a new entry —
+        repeat submissions under the same name never overwrite a prior entry
+        (FR-007, FR-008).
+      security:
+        - leaderboardCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreSubmission'
+            examples:
+              default:
+                value:
+                  name: "kris"
+                  score: 42
+      responses:
+        "201":
+          description: Score accepted and recorded as a new Leaderboard Entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreSubmissionAccepted'
+        "400":
+          description: >
+            Validation failure — name empty/too long, or score missing/negative/
+            non-integer. No entry is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          description: >
+            Missing or invalid credential (FR-012). No entry is written. Identical
+            response regardless of whether the credential was absent or simply
+            wrong, to avoid leaking which case occurred.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    leaderboardCredential:
+      type: apiKey
+      in: header
+      name: X-Leaderboard-Token
+      description: >
+        Shared secret known only to the legitimate game client, injected
+        server-side into the served game page (research.md §4). Not a per-player
+        or per-session credential — one global value for this feature.
+  schemas:
+    ScoreSubmission:
+      type: object
+      required: [name, score]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: Player-entered display name, trimmed of leading/trailing whitespace.
+          example: "kris"
+        score:
+          type: integer
+          minimum: 0
+          description: Score achieved in this single completed attempt.
+          example: 42
+    ScoreSubmissionAccepted:
+      type: object
+      properties:
+        recorded:
+          type: boolean
+          example: true
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "invalid credential"

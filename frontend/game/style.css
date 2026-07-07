@@ -26,6 +26,22 @@ button {
   align-items: center;
   justify-content: center;
   visibility: hidden;
+  z-index: 15;
+}
+#end-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+  text-align: center;
+}
+#end-content h1 {
+  margin: 0;
+  font-size: 1.2em;
+}
+#end-content p {
+  margin: 0;
+  font-size: 0.6em;
 }
 #end button {
   background-color: rgb(231, 50, 18);
@@ -33,6 +49,37 @@ button {
   font-family: inherit;
   font-size: inherit;
   animation : colorPop 2s linear infinite;
+}
+#name-prompt {
+  position: absolute;
+  top: 0;
+  left: 0;
+  min-width: 100%;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 20;
+}
+#name-prompt form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+#name-prompt label {
+  font-size: 0.6em;
+  text-align: center;
+}
+#name-prompt input {
+  font-family: inherit;
+  font-size: 0.6em;
+  padding: 10px;
+  width: 240px;
+  text-align: center;
+  border-radius: 3px;
+  border: none;
 }
 #controls {
   position: absolute;

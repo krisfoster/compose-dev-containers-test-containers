@@ -125,6 +125,15 @@ instead. Display `/host` on a presenter-only screen: the QR code and its "Rotate
 exposed on the public endpoint. Local play at `localhost:8080/play` keeps working even if the
 public tunnel is down, not configured, or no QR code has been generated yet.
 
+### Leaderboard scores
+
+Before playing, each player enters a display name. On death, their score is shown on a "Game
+Over" screen and submitted to a Redis-backed leaderboard store automatically — no extra step
+required. A "Replay" button restarts immediately, reusing the same name. Score writes are
+protected by `LEADERBOARD_API_SECRET` (set in `.env`, injected into the served game page
+automatically), so only the game client itself can record a score. There is no leaderboard
+viewing page yet — that's a separate, future feature.
+
 ### Troubleshooting
 
 - **Port 8080 already in use**: `docker compose up` fails with "port is already allocated". Stop
@@ -137,8 +146,11 @@ public tunnel is down, not configured, or no QR code has been generated yet.
 
 Full validation walkthroughs are in
 [`specs/001-host-webapp-ngrok/quickstart.md`](specs/001-host-webapp-ngrok/quickstart.md) (local +
-public hosting) and
-[`specs/002-qr-gated-access/quickstart.md`](specs/002-qr-gated-access/quickstart.md) (the QR gate).
+public hosting),
+[`specs/002-qr-gated-access/quickstart.md`](specs/002-qr-gated-access/quickstart.md) (the QR gate),
+and
+[`specs/003-leaderboard-score-submission/quickstart.md`](specs/003-leaderboard-score-submission/quickstart.md)
+(name entry, Game Over, and leaderboard score submission).
 
 ## References
 

@@ -12,12 +12,28 @@ import (
 
 	"crossywhale/app/internal/gate"
 	"crossywhale/app/internal/gate/gatetest"
+	"crossywhale/app/internal/leaderboard"
+	"crossywhale/app/internal/leaderboard/leaderboardtest"
 )
 
-// newTestApp builds an App wired to an in-memory fake WindowStore and a fake ngrok
-// inspection API, so these tests never touch a real container or the network
-// (constitution Principle III reserves real Redis for the WindowStore's own tests;
-// everything above that boundary is fair game for fakes).
+// testLeaderboardSecret is the LEADERBOARD_API_SECRET newTestApp wires every test App
+// with, and testIndexHTMLTemplate is the fixture index.html those Apps serve — it
+// carries the same credential-injection placeholder as the real
+// frontend/game/index.html (specs/003-leaderboard-score-submission/research.md §4), so
+// tests can assert the rendered output actually contains the injected token.
+const testLeaderboardSecret = "test-leaderboard-secret"
+
+const testIndexHTMLTemplate = `<html><script>window.__LEADERBOARD_TOKEN__ = "{{.LeaderboardToken}}";</script>game</html>`
+
+// testIndexHTMLRendered is testIndexHTMLTemplate after template execution with
+// testLeaderboardSecret — what a request to /play should actually receive.
+const testIndexHTMLRendered = `<html><script>window.__LEADERBOARD_TOKEN__ = "` + testLeaderboardSecret + `";</script>game</html>`
+
+// newTestApp builds an App wired to an in-memory fake WindowStore, a fake in-memory
+// ScoreStore, and a fake ngrok inspection API, so these tests never touch a real
+// container or the network (constitution Principle III reserves real Redis for the
+// WindowStore's and ScoreStore's own tests; everything above that boundary is fair
+// game for fakes).
 func newTestApp(t *testing.T) (*App, *gatetest.FakeWindowStore) {
 	t.Helper()
 
@@ -28,20 +44,23 @@ func newTestApp(t *testing.T) (*App, *gatetest.FakeWindowStore) {
 	t.Cleanup(ngrokServer.Close)
 
 	frontendDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(frontendDir, "index.html"), []byte("<html>game</html>"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(frontendDir, "index.html"), []byte(testIndexHTMLTemplate), 0o644); err != nil {
 		t.Fatalf("write fake index.html: %v", err)
 	}
 
 	store := &gatetest.FakeWindowStore{}
 	signer := gate.NewSigner([]byte("test-secret"), time.Hour)
+	scoreStore := &leaderboardtest.FakeScoreStore{}
 
 	app := &App{
-		store:       store,
-		gate:        gate.NewGate(store, signer),
-		frontendDir: frontendDir,
-		ngrokAPIURL: ngrokServer.URL,
-		qrWindowTTL: time.Minute,
-		httpClient:  ngrokServer.Client(),
+		store:              store,
+		gate:               gate.NewGate(store, signer),
+		frontendDir:        frontendDir,
+		ngrokAPIURL:        ngrokServer.URL,
+		qrWindowTTL:        time.Minute,
+		httpClient:         ngrokServer.Client(),
+		leaderboardHandler: leaderboard.NewHandler(scoreStore, testLeaderboardSecret),
+		leaderboardSecret:  testLeaderboardSecret,
 	}
 	return app, store
 }
@@ -197,8 +216,41 @@ func TestUngatedPlayRequiresNoGate(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if rec.Body.String() != "<html>game</html>" {
-		t.Fatalf("body = %q, want the game's index.html content", rec.Body.String())
+	if rec.Body.String() != testIndexHTMLRendered {
+		t.Fatalf("body = %q, want the rendered index.html content %q", rec.Body.String(), testIndexHTMLRendered)
+	}
+}
+
+// specs/003-leaderboard-score-submission FR-014: the leaderboard write credential is
+// injected into the served game page automatically, with no visible extra step for
+// the player. handlePlayIndex backs both listeners identically (see
+// TestGatedPlayAllowsValidToken for gate-specific behavior), so this only needs to
+// check the ungated listener's rendering.
+func TestHandlePlayIndexInjectsLeaderboardToken(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/play", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), testLeaderboardSecret) {
+		t.Fatalf("index page body does not contain the injected leaderboard token:\n%s", rec.Body.String())
+	}
+}
+
+func TestHandlePlayIndexWhenTemplateFileMissing(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.frontendDir = t.TempDir() // no index.html written here
+
+	req := httptest.NewRequest(http.MethodGet, "/play", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }
 
@@ -278,6 +330,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	for _, key := range []string{
 		"APP_WEB_PORT", "APP_GATED_PORT", "REDIS_ADDR", "GRANT_COOKIE_SECRET",
 		"QR_WINDOW_TTL", "GRANT_LIFETIME", "NGROK_API_URL", "FRONTEND_DIR",
+		"LEADERBOARD_API_SECRET",
 	} {
 		t.Setenv(key, "") // envOr/envDurationOr treat "" the same as unset
 	}
@@ -289,11 +342,15 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.QRWindowTTL != 15*time.Minute || cfg.GrantLifetime != 4*time.Hour {
 		t.Fatalf("unexpected duration defaults: %+v", cfg)
 	}
+	if cfg.LeaderboardAPISecret != "dev-only-change-me" {
+		t.Fatalf("LeaderboardAPISecret = %q, want the dev default", cfg.LeaderboardAPISecret)
+	}
 }
 
 func TestLoadConfigReadsOverrides(t *testing.T) {
 	t.Setenv("APP_WEB_PORT", "9090")
 	t.Setenv("QR_WINDOW_TTL", "5m")
+	t.Setenv("LEADERBOARD_API_SECRET", "super-secret")
 
 	cfg := loadConfig()
 	if cfg.WebPort != "9090" {
@@ -301,6 +358,9 @@ func TestLoadConfigReadsOverrides(t *testing.T) {
 	}
 	if cfg.QRWindowTTL != 5*time.Minute {
 		t.Fatalf("QRWindowTTL = %v, want 5m", cfg.QRWindowTTL)
+	}
+	if cfg.LeaderboardAPISecret != "super-secret" {
+		t.Fatalf("LeaderboardAPISecret = %q, want super-secret", cfg.LeaderboardAPISecret)
 	}
 }
 
@@ -334,12 +394,13 @@ func appWithErroringStore(t *testing.T) *App {
 	store := erroringStore{}
 	frontendDir := t.TempDir()
 	return &App{
-		store:       store,
-		gate:        gate.NewGate(store, signer),
-		frontendDir: frontendDir,
-		ngrokAPIURL: "http://127.0.0.1:1/unreachable",
-		qrWindowTTL: time.Minute,
-		httpClient:  &http.Client{Timeout: 200 * time.Millisecond},
+		store:              store,
+		gate:               gate.NewGate(store, signer),
+		frontendDir:        frontendDir,
+		ngrokAPIURL:        "http://127.0.0.1:1/unreachable",
+		qrWindowTTL:        time.Minute,
+		httpClient:         &http.Client{Timeout: 200 * time.Millisecond},
+		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret),
 	}
 }
 
@@ -377,9 +438,10 @@ func (activateFailsStore) Activate(context.Context, time.Duration) (string, erro
 func TestHandleHostWhenActivateFails(t *testing.T) {
 	store := activateFailsStore{}
 	app := &App{
-		store:       store,
-		gate:        gate.NewGate(store, gate.NewSigner([]byte("test-secret"), time.Hour)),
-		frontendDir: t.TempDir(),
+		store:              store,
+		gate:               gate.NewGate(store, gate.NewSigner([]byte("test-secret"), time.Hour)),
+		frontendDir:        t.TempDir(),
+		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret),
 	}
 	req := httptest.NewRequest(http.MethodGet, "/host", nil)
 	rec := httptest.NewRecorder()

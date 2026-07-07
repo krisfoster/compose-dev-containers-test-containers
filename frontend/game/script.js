@@ -17,6 +17,42 @@ const WHALE_YAW_BY_DIRECTION = {
 
 const counterDOM = document.getElementById('counter');
 const endDOM = document.getElementById('end');
+const finalScoreDOM = document.getElementById('final-score');
+const namePromptDOM = document.getElementById('name-prompt');
+const nameFormDOM = document.getElementById('name-form');
+const nameInputDOM = document.getElementById('name-input');
+
+const MAX_NAME_LENGTH = 32;
+const LEADERBOARD_ENDPOINT = '/api/leaderboard/scores';
+
+let playerName = '';
+let nameEntered = false; // Blocks movement until a name has been entered (FR-001, FR-002)
+
+nameFormDOM.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const trimmed = nameInputDOM.value.trim().slice(0, MAX_NAME_LENGTH);
+  if (!trimmed) return;
+  playerName = trimmed;
+  nameEntered = true;
+  namePromptDOM.style.visibility = 'hidden';
+});
+
+// Best-effort: a failed or slow submission never blocks the Game Over screen or
+// Replay (FR-006; edge case: leaderboard store temporarily unavailable).
+async function submitScore(name, score) {
+  try {
+    await fetch(LEADERBOARD_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Leaderboard-Token': window.__LEADERBOARD_TOKEN__ || '',
+      },
+      body: JSON.stringify({ name, score }),
+    });
+  } catch (err) {
+    console.warn('leaderboard score submission failed', err);
+  }
+}
 
 const scene = new THREE.Scene();
 
@@ -565,6 +601,7 @@ window.addEventListener("keydown", event => {
 });
 
 function move(direction) {
+  if (!nameEntered) return;
   const finalPositions = moves.reduce((position,move) => {
     if(move === 'forward') return {lane: position.lane+1, column: position.column};
     if(move === 'backward') return {lane: position.lane-1, column: position.column};
@@ -710,9 +747,11 @@ function animate(timestamp) {
     lanes[currentLane].vechicles.forEach(vechicle => {
       const carMinX = vechicle.position.x - vechicleLength*zoom/2;
       const carMaxX = vechicle.position.x + vechicleLength*zoom/2;
-      if(whaleMaxX > carMinX && whaleMinX < carMaxX) {
+      if(whaleMaxX > carMinX && whaleMinX < carMaxX && !gameOver) {
         gameOver = true;
+        finalScoreDOM.innerHTML = currentLane;
         endDOM.style.visibility = 'visible';
+        submitScore(playerName, currentLane);
       }
     });
 

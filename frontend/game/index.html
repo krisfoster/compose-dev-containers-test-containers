@@ -5,13 +5,22 @@
   <title>Crossy Road</title>
   <link rel="stylesheet" href="./style.css">
   <link rel="icon" href="./favicon.ico">
+  <script>window.__LEADERBOARD_TOKEN__ = "{{.LeaderboardToken}}";</script>
 
   <script src="https://kit.fontawesome.com/622afd0c30.js"></script>
 
 </head>
 <body>
+<div id="name-prompt">
+  <form id="name-form">
+    <label for="name-input">Enter your name to play</label>
+    <input id="name-input" type="text" maxlength="32" autocomplete="off" autofocus>
+    <button type="submit">Play</button>
+  </form>
+</div>
+
 <div id="counter">0</div>
-    
+
 <div id="controls">
   <div>
     <button id="forward">
@@ -46,7 +55,11 @@
 </div>
 
 <div id="end">
-  <button id="retry">Retry</button>
+  <div id="end-content">
+    <h1>Game Over</h1>
+    <p>Score: <span id="final-score">0</span></p>
+    <button id="retry">Replay</button>
+  </div>
 </div>
 
 <div class= "credits">
