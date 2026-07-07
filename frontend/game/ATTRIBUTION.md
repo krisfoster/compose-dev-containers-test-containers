@@ -1,6 +1,6 @@
 # Attribution
 
-This directory contains code and assets from two upstream sources.
+This directory contains code and assets from several upstream sources.
 
 ## Game code
 
@@ -26,6 +26,21 @@ This directory contains code and assets from two upstream sources.
 Required credit line (surface this somewhere visible in the running app before shipping):
 
 > "Moby Dock (Docker whale)" by Maurice Svay, https://sketchfab.com/3d-models/moby-dock-docker-whale-b706010291ca46ad8daca2d4aeb79edd, licensed under CC BY 4.0. Scaled and re-oriented for use in this project.
+
+## 3D model: Container
+
+`models/container.glb` is:
+
+- **Title**: Container
+- **Author**: Willy Decarpentrie
+- **Source**: https://skfb.ly/FZOL
+- **License**: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- **Downloaded**: 2026-07-07 as `container.glb`
+- **Modifications**: none to the model file itself. In-game, loaded via `GLTFLoader`, rotated +90° around the X axis (glTF Y-up → game Z-up), auto-scaled so the longest bounding-box axis is 100 world units, and centered on the XY plane with its bottom at z=0. Replaces the voxel truck as the obstacle in truck-lane rows.
+
+Required credit line:
+
+> "Container" (https://skfb.ly/FZOL) by Willy Decarpentrie is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
 
 ## Modifications
 
@@ -53,6 +68,14 @@ Required credit line (surface this somewhere visible in the running app before s
   - `script.js`: renamed `BoxBufferGeometry` -> `BoxGeometry` (11 sites) and `PlaneBufferGeometry` -> `PlaneGeometry` (1 site); the `*BufferGeometry` aliases were removed in r144.
   - `script.js`: added `const` to previously-implicit globals (`hemiLight`, `dirLight`, `backLight`, `height`, and a `positionY` in the `backward` case) so ES-module strict mode does not throw.
   - `script.js`: preserved the original visual look by setting `THREE.ColorManagement.enabled = false`, `renderer.outputColorSpace = LinearSRGBColorSpace`, and `renderer.useLegacyLights = true`. These three toggles restore r99 behaviour under r160 defaults. `useLegacyLights` was removed in r165, so future three.js upgrades will need to retune lighting rather than keep this shim.
+
+- **2026-07-07** — Replaced voxel truck obstacles with the Container GLB model. Details:
+  - Added `CONTAINER_MODEL_URL` and `CONTAINER_MODEL_TARGET_LENGTH = 100` constants and a null-initialized global `containerScene` to `script.js`.
+  - Added `loadVehicleModel(url, targetLength, onSuccess, label)` helper: loads a GLB via `GLTFLoader`, applies +90° X rotation (glTF Y-up → game Z-up), auto-scales longest bounding-box axis to `targetLength` world units, centers on XY, places bottom at z=0, enables shadow casting/receiving. Logs success at `console.log`, gracefully falls back with `console.info` on error.
+  - Added `preloadVehicleModels()` and `swapExistingTrucksToModel()`: models are pre-loaded once at startup; when the model finishes loading it is cloned into any already-created truck-lane vehicles (swap), and all future `Truck()` calls use the loaded model clone directly. Falls back to the existing voxel truck shape when the model is unavailable.
+  - Called `preloadVehicleModels()` immediately after `tryLoadWhaleModel(whale)` at startup.
+  - Extended the `#cc-attribution` paragraph in `index.html` with a link for "Container" by Willy Decarpentrie, matching the existing Moby Dock entry style.
+  - Attribution entry added above in "3D model: Container" section.
 
 ## Runtime notes
 

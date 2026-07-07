@@ -7,6 +7,11 @@ const WHALE_MODEL_URL = './models/moby-dock.glb';
 const WHALE_MODEL_TARGET_LENGTH = 90;
 const WHALE_MODEL_ROTATION = { x: Math.PI / 2, y: 0, z: 0 };
 
+const CONTAINER_MODEL_URL = './models/container.glb';
+const CONTAINER_MODEL_TARGET_LENGTH = 100;
+
+let containerScene = null;
+
 const WHALE_FORWARD_YAW = -Math.PI / 2;
 const WHALE_YAW_BY_DIRECTION = {
   forward: 0,
@@ -132,6 +137,7 @@ const addLane = () => {
 const whale = new Whale();
 scene.add( whale );
 tryLoadWhaleModel(whale);
+preloadVehicleModels();
 
 const hemiLight = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.6);
 scene.add(hemiLight)
@@ -294,7 +300,15 @@ function Car() {
 }
 
 function Truck() {
+  if (containerScene) {
+    const truck = new THREE.Group();
+    truck.add(containerScene.clone(true));
+    truck.userData.isModelTruck = true;
+    return truck;
+  }
+
   const truck = new THREE.Group();
+  truck.userData.isModelTruck = false;
   const color = vechicleColors[Math.floor(Math.random() * vechicleColors.length)];
 
 
@@ -436,6 +450,65 @@ function Whale() {
   });
 
   return whale;
+}
+
+function loadVehicleModel(url, targetLength, onSuccess, label) {
+  const loader = new GLTFLoader();
+  loader.load(
+    url,
+    (gltf) => {
+      const model = gltf.scene;
+      model.rotation.set(Math.PI / 2, 0, 0);
+      model.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+      model.updateMatrixWorld(true);
+
+      const box = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const longestAxis = Math.max(size.x, size.y, size.z);
+      if (longestAxis > 0) {
+        model.scale.setScalar(targetLength / longestAxis);
+      }
+      model.updateMatrixWorld(true);
+
+      const finalBox = new THREE.Box3().setFromObject(model);
+      model.position.x -= (finalBox.max.x + finalBox.min.x) / 2;
+      model.position.y -= (finalBox.max.y + finalBox.min.y) / 2;
+      model.position.z -= finalBox.min.z;
+
+      console.log('[' + label + '] loaded', url);
+      onSuccess(model);
+    },
+    undefined,
+    (err) => {
+      console.info('[' + label + '] no model at ' + url + ', keeping voxel truck.', err?.message || err);
+    }
+  );
+}
+
+function swapExistingTrucksToModel() {
+  if (!lanes || !containerScene) return;
+  lanes.forEach(lane => {
+    if (lane.type !== 'truck') return;
+    lane.vechicles.forEach(vehicle => {
+      if (vehicle.userData.isModelTruck) return;
+      while (vehicle.children.length > 0) vehicle.remove(vehicle.children[0]);
+      vehicle.add(containerScene.clone(true));
+      vehicle.userData.isModelTruck = true;
+    });
+  });
+}
+
+function preloadVehicleModels() {
+  loadVehicleModel(CONTAINER_MODEL_URL, CONTAINER_MODEL_TARGET_LENGTH, (model) => {
+    containerScene = model;
+    swapExistingTrucksToModel();
+  }, 'container');
 }
 
 function tryLoadWhaleModel(whaleGroup) {
