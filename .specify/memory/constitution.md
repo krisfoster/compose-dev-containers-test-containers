@@ -1,5 +1,30 @@
 <!--
 Sync Impact Report
+Version change: 1.1.0 -> 1.2.0
+Modified principles: (none renamed or removed)
+Added sections:
+  Technology Stack: new "Kind/K8s deployment carve-out" permitting Kind as an optional local
+    Kubernetes deployment target for demonstrating compose→k8s portability, with an explicit
+    non-replacement condition (Kind does not replace docker compose for development or primary
+    demo use).
+Removed sections: (none)
+Rationale: Feature 009-k8s-compose-bridge adds Kubernetes manifest generation and Kind-based
+  local deployment. The Technology Stack section listed only "docker compose in development,
+  staging, and demo" with no carve-out for K8s deployment targets. This amendment adds an
+  explicit carve-out so that Kind is recognised as an optional secondary path without
+  undermining Principle II (Compose-Orchestrated Reproducibility).
+Templates requiring updates:
+  OK  .specify/templates/plan-template.md: Constitution Check placeholder is design-compatible;
+      no constitution-derived language to update
+  OK  .specify/templates/spec-template.md: no constitution reference; no update needed
+  OK  .specify/templates/tasks-template.md: no constitution reference; no update needed
+Follow-up TODOs:
+  TODO(K8S-CARVE-OUT-REVIEW): If this project evolves to treat K8s as a primary deployment
+    target (not just a demo portability showcase), revisit Principle II and this carve-out.
+-->
+
+<!--
+Sync Impact Report
 Version change: 1.0.0 -> 1.1.0
 Modified principles: (none renamed or removed)
 Added sections:
@@ -101,7 +126,10 @@ The stack for this milestone is fixed:
 - **Frontend**: three.js r160 loaded via ES-module importmap. Voxel and box-shaped geometry with
   flat shading. Docker Whale is a licensed asset (CC BY 4.0) preserved in its own style.
 - **Orchestration**: `docker compose` in development, staging, and demo. DevContainers, when
-  added, consume the same compose services.
+  added, consume the same compose services. Kind (Kubernetes in Docker) is an optional local
+  Kubernetes deployment target for demonstrating compose→k8s portability via Compose Bridge;
+  it does not replace docker compose for development or primary demo use, and is not a required
+  tool for any day-to-day workflow.
 - **Public URLs**: ngrok as the default tunnel. Cloudflare Tunnel is an acceptable alternative
   when a stable URL is needed for a specific event.
 - **Testing**: Go standard testing plus Testcontainers-go for any test crossing a service
@@ -162,4 +190,4 @@ plan's Complexity Tracking section before it is accepted.
 
 Runtime guidance for day-to-day work lives in `crossy.md` at the repo root.
 
-**Version**: 1.1.0 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-06
+**Version**: 1.2.0 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-07

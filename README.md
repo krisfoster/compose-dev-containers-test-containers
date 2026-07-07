@@ -207,3 +207,19 @@ VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com
 - Claude Code inside sbx: <https://docs.docker.com/ai/sandboxes/agents/claude-code/>
 - direnv: <https://direnv.net/>
 - GSD plugin: <https://github.com/open-gsd/gsd-core>
+
+
+
+1. Clean install:
+
+helm install whale-runner ./out/
+2. Clean uninstall:
+
+helm uninstall whale-runner --namespace default
+kubectl patch service app-published -n whale-runner \
+  -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null
+kubectl wait --for=delete namespace/whale-runner --timeout=60s
+3. Port forward:
+
+kubectl port-forward -n whale-runner service/app-published 8080:8080
+Then open http://localhost:8080.

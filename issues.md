@@ -4,10 +4,6 @@ Running list of known issues and feature ideas. Not prioritized or scheduled —
 
 ## Open
 
-1. **Mobile support.** Make the game work better on phones: tap-to-move controls for the whale, and full-screen landscape play (prompt the user to rotate their phone when in portrait mode). Also, update the home page so that the QR code is displayed on the right hand side (2-col layout) and ensure that it refreshes identically to how it does on the QR code page.
-
-2. **Dev container support.** Add support for developing, testing, and running the whole app inside a dev container, with matching VS Code config.
-
 6. **Container/bug-themed obstacles.** Update the game so some obstacles are container/bug themed (e.g. large bugs, tumbleweed, etc.) — options to be discussed at implementation time.
 
 7. **K8s manifest generation via Compose Bridge.** Add support for using the Docker Compose Bridge to generate Kubernetes manifests from the compose file, so the app can be deployed to a k8s cluster. Add scripts to easily deploy the generated manifests to a local k8s cluster running on Docker desktop (Kind cluer). Use the industry standard tools to do this - no surprises, it should work as expected.
@@ -20,11 +16,13 @@ Running list of known issues and feature ideas. Not prioritized or scheduled —
 
 11. **Remove Refences to GDS.** This is no longer used and references to it dhoudl be removed from the project. Instead we use speckit and links to that should be added.
 
-12. **Add CC attributions to the game.** They should be there, but they are not. If allowed, add the CC attributions on the start view of the app, where the user enters their name. Also add a link to the game to get to the leader-board.
-
-13. **Harden the security around Reddis in the App.** Make Reddis only accessible from the go app, with n o publicly exposed endpoints.
+13. **Harden the security around Reddis in the App.** Make Reddis only accessible from the go app, with no publicly exposed endpoints.
 
 ## Done
+
+1. ✅ **Mobile support.** Make the game work better on phones: tap-to-move controls for the whale, and full-screen landscape play (prompt the user to rotate their phone when in portrait mode). Also, update the home page so that the QR code is displayed on the right hand side (2-col layout) and ensure that it refreshes identically to how it does on the QR code page.
+
+2. ✅ **Dev container support.** Add support for developing, testing, and running the whole app inside a dev container, with matching VS Code config.
 
 3. ✅ **Leaderboard storage + score submission flow.** Store player name and score in a leaderboard backed by Redis. _(Implemented — see [`specs/003-leaderboard-score-submission`](specs/003-leaderboard-score-submission).)_
    - Before the game starts, ask the player to enter their name.
@@ -36,3 +34,5 @@ Running list of known issues and feature ideas. Not prioritized or scheduled —
 4. ✅ **Docker Hardened Images (DHI).** Migrate all container images used by the app to DHI. _(Implemented — see [`specs/005-dhi-image-migration`](specs/005-dhi-image-migration). golang/alpine/redis migrated to DHI; ngrok exempt (no DHI equivalent). Note the DHI Redis `protected-mode` workaround documented in that feature's image inventory.)_
 
 5. ✅ **Leaderboard page.** A standalone Go-based app/page that dynamically refreshes by polling/calling the leaderboard API. _(Implemented — see [`specs/004-leaderboard-page`](specs/004-leaderboard-page).)_
+
+12. ✅ **Add CC attributions to the game.** They should be there, but they are not. If allowed, add the CC attributions on the start view of the app, where the user enters their name. Also add a link to the game to get to the leader-board.
