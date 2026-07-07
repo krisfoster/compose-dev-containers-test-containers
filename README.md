@@ -61,14 +61,14 @@ services:
   ngrok:   # public tunnel (optional)
 ```
 
-**How services discover each other**: Docker Compose automatically provides DNS so every service can reach any other by its service name. Look at the `environment:` block of the `app` service:
+**How services discover each other**: the Go app needs to know the address of the Redis server. It reads this from the `REDIS_ADDR` environment variable. Look at how that variable is set in the `app` service:
 
 ```yaml
 environment:
   - REDIS_ADDR=redis:6379
 ```
 
-The value `redis` is not a hostname you configured — it is the name of the `redis` service in this file. No hard-coded IP addresses needed.
+The hostname part — `redis` — is not a DNS name you configured anywhere. It is the name of the `redis` service in this file. Docker Compose automatically provides DNS so that every service can reach any other by its service name. The app just reads `REDIS_ADDR`, and Docker resolves `redis` to the correct container at runtime. No hard-coded IP addresses needed.
 
 **`expose:` vs `ports:`**: these two keys control who can reach a port.
 
