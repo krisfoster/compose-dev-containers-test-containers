@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,26 @@ func TestHandleHostDoesNotReactivateWhenAlreadyActive(t *testing.T) {
 	}
 	if current != existing {
 		t.Fatalf("Current() = %q, want unchanged %q", current, existing)
+	}
+}
+
+// The rotate button must submit via fetch/JS so the QR image updates without a full
+// page reload, per the presenter-facing UX request; this checks that wiring is
+// actually present in the served markup rather than asserting on behavior a Go test
+// can't execute (there's no JS runtime here to click the button).
+func TestHandleHostPageWiresUpInPlaceRotate(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/host", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="qr"`) {
+		t.Fatal("host page missing img#qr for the rotate script to target")
+	}
+	if !strings.Contains(body, `fetch('/host/rotate'`) {
+		t.Fatal("host page missing the in-place rotate fetch() call")
 	}
 }
 

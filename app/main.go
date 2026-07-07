@@ -171,10 +171,21 @@ const hostPageHTML = `<!DOCTYPE html>
 <head><title>Crossy Whale - Host</title></head>
 <body>
 <h1>Crossy Whale</h1>
-<img src="/qr.png" alt="QR code to join" width="320" height="320">
-<form action="/host/rotate" method="post">
+<img id="qr" src="/qr.png" alt="QR code to join" width="320" height="320">
+<form id="rotate-form" action="/host/rotate" method="post">
 <button type="submit">Rotate QR</button>
 </form>
+<script>
+// Progressive enhancement: with JS, rotating swaps the QR image in place with no
+// page reload. Without JS, the form still works via its normal POST + redirect.
+document.getElementById('rotate-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const resp = await fetch('/host/rotate', { method: 'POST' });
+  if (resp.ok) {
+    document.getElementById('qr').src = '/qr.png?t=' + Date.now();
+  }
+});
+</script>
 </body>
 </html>
 `
