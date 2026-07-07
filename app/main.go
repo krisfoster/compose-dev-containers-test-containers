@@ -2,9 +2,11 @@
 // presenter's local access (docker-compose.yml publishes this port to the host), and
 // a gated one that only the ngrok service points at. See
 // specs/002-qr-gated-access/contracts/gate-http-contract.md for the full route table.
-// The leaderboard score-write API added by 003-leaderboard-score-submission is
-// documented separately in
-// specs/003-leaderboard-score-submission/contracts/leaderboard-openapi.yaml.
+// The leaderboard API (score submission, added by 003-leaderboard-score-submission, and
+// standings retrieval, added by 004-leaderboard-page) is documented separately in
+// specs/004-leaderboard-page/contracts/leaderboard-openapi.yaml. The leaderboard
+// display page itself (004-leaderboard-page) is served at /leaderboard on both
+// listeners, ungated (FR-011/FR-013 of that feature's spec.md).
 package main
 
 import (
@@ -120,31 +122,40 @@ type App struct {
 
 // ungatedMux serves the game with no access check at all (FR-004), plus the
 // presenter-only routes for displaying and rotating the QR code (FR-002, FR-007).
+// The bare "/" serves a getting-started landing page rather than the raw game
+// index.html — playing straight from "/" used to silently break score submission
+// (it bypassed handlePlayIndex's credential injection, so
+// window.__LEADERBOARD_TOKEN__ was left as the unrendered template placeholder and
+// every submission was rejected with no visible error). Routing players through the
+// landing page's explicit "/play" link avoids that trap entirely.
 func (a *App) ungatedMux() http.Handler {
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.Dir(a.frontendDir))
-	mux.Handle("/", fileServer)
+	mux.Handle("/", handleRootOrAsset(fileServer))
 	mux.HandleFunc("/play", a.handlePlayIndex)
 	mux.HandleFunc("/qr.png", a.handleQRPNG)
 	mux.HandleFunc("/host", a.handleHost)
 	mux.HandleFunc("/host/rotate", a.handleHostRotate)
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
+	mux.HandleFunc("/leaderboard", handleLeaderboardPage)
 	return mux
 }
 
 // gatedMux serves only the game itself, behind the gate decision (FR-003, FR-009).
 // /qr.png, /host, and /host/rotate are intentionally absent here — a request for
 // them gets the same 404 any undefined route would, per the gate HTTP contract.
-// /api/leaderboard/scores is deliberately NOT wrapped in the gate middleware — its
-// own credential check (see internal/leaderboard) is this feature's independent
-// protection, not tied to QR visitor access (specs/003-leaderboard-score-submission/
-// research.md §2).
+// /api/leaderboard/scores and /leaderboard are deliberately NOT wrapped in the gate
+// middleware — the former has its own independent credential check on writes and no
+// check at all on reads (see internal/leaderboard); the latter has no gating
+// requirement of its own (specs/004-leaderboard-page/spec.md FR-011, FR-013). Neither
+// is tied to QR visitor access (specs/003-leaderboard-score-submission/research.md §2).
 func (a *App) gatedMux() http.Handler {
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.Dir(a.frontendDir))
 	mux.Handle("/", a.gate.Middleware(fileServer))
 	mux.Handle("/play", a.gate.Middleware(http.HandlerFunc(a.handlePlayIndex)))
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
+	mux.HandleFunc("/leaderboard", handleLeaderboardPage)
 	return mux
 }
 
@@ -196,6 +207,45 @@ func (a *App) handleQRPNG(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(png)
+}
+
+// gettingStartedPageHTML is served at the bare "/" on the ungated listener — a small
+// landing page linking to the three local presenter destinations, so nobody lands on
+// (or accidentally plays through) the raw, un-rendered game file directly.
+const gettingStartedPageHTML = `<!DOCTYPE html>
+<html>
+<head>
+<title>Crossy Whale</title>
+<style>
+  body { font-family: sans-serif; max-width: 480px; margin: 3rem auto; padding: 0 1rem; }
+  a.button { display: block; text-align: center; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0.5rem; text-decoration: none; font-weight: bold; color: #fff; }
+  a.play { background: #1f6feb; }
+  a.host { background: #6e7681; }
+  a.leaderboard { background: #2ea043; }
+</style>
+</head>
+<body>
+<h1>Crossy Whale</h1>
+<a class="button play" href="/play">Play the game</a>
+<a class="button host" href="/host">Host: show the QR code</a>
+<a class="button leaderboard" href="/leaderboard">View the leaderboard</a>
+</body>
+</html>
+`
+
+// handleRootOrAsset serves gettingStartedPageHTML for an exact "/" request and
+// delegates everything else (script.js, style.css, model assets, ...) to assets — the
+// same catch-all fileServer /play's rendered page depends on for its own
+// root-relative asset references.
+func handleRootOrAsset(assets http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			assets.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(gettingStartedPageHTML))
+	}
 }
 
 const hostPageHTML = `<!DOCTYPE html>
@@ -251,6 +301,96 @@ func (a *App) handleHostRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/host", http.StatusSeeOther)
+}
+
+// leaderboardPageHTML is the leaderboard display page (specs/004-leaderboard-page),
+// meant for an unattended wall/booth display. It fetches GET /api/leaderboard/scores
+// once on load (FR-002 through FR-004), then keeps polling it on an interval for as
+// long as the page stays open (FR-006) — a failed poll leaves the currently rendered
+// standings untouched rather than clearing or erroring (FR-007), and a poll returning
+// zero standings shows an explicit empty-state message (FR-008) rather than an empty
+// list. No credential is sent or required (FR-011, FR-013).
+const leaderboardPageHTML = `<!DOCTYPE html>
+<html>
+<head>
+<title>Crossy Whale - Leaderboard</title>
+<style>
+  body { font-family: sans-serif; background: #0b1b2b; color: #fff; margin: 0; padding: 2rem; }
+  h1 { text-align: center; }
+  #standings { list-style: none; padding: 0; max-width: 480px; margin: 1.5rem auto 0; }
+  #standings li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.5rem 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.15); }
+  #standings .rank { opacity: 0.6; min-width: 2.5rem; }
+  #standings .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #standings .score { font-weight: bold; }
+  #status { text-align: center; opacity: 0.75; }
+</style>
+</head>
+<body>
+<h1>Crossy Whale Leaderboard</h1>
+<p id="status">Loading standings&hellip;</p>
+<ul id="standings"></ul>
+<script>
+(function () {
+  var POLL_INTERVAL_MS = 4000;
+  var statusEl = document.getElementById('status');
+  var listEl = document.getElementById('standings');
+  var hasRenderedOnce = false;
+
+  function escapeText(value) {
+    var div = document.createElement('div');
+    div.textContent = value;
+    return div.innerHTML;
+  }
+
+  function render(standings) {
+    if (standings.length === 0) {
+      listEl.innerHTML = '';
+      statusEl.textContent = 'No scores yet — be the first to play!';
+      statusEl.style.display = '';
+      return;
+    }
+    statusEl.style.display = 'none';
+    listEl.innerHTML = standings.map(function (s) {
+      return '<li><span class="rank">#' + s.rank + '</span>' +
+        '<span class="name">' + escapeText(s.name) + '</span>' +
+        '<span class="score">' + s.score + '</span></li>';
+    }).join('');
+  }
+
+  function refresh() {
+    fetch('/api/leaderboard/scores')
+      .then(function (resp) {
+        if (!resp.ok) { throw new Error('leaderboard fetch failed: ' + resp.status); }
+        return resp.json();
+      })
+      .then(function (data) {
+        render(data.standings || []);
+        hasRenderedOnce = true;
+      })
+      .catch(function () {
+        // FR-007: on failure, leave whatever is already rendered alone and retry on
+        // the next interval tick. Only the very first load has nothing to fall back
+        // to, so the loading message simply stays up until a later poll succeeds.
+        if (!hasRenderedOnce) {
+          statusEl.textContent = 'Loading standings…';
+        }
+      });
+  }
+
+  refresh();
+  setInterval(refresh, POLL_INTERVAL_MS);
+})();
+</script>
+</body>
+</html>
+`
+
+// handleLeaderboardPage serves the leaderboard display page. It has no dependency on
+// App state — the page's own script does all the data fetching client-side — so it is
+// a plain function rather than an App method.
+func handleLeaderboardPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(leaderboardPageHTML))
 }
 
 // ngrokTunnelsResponse is the shape of ngrok's local inspection API

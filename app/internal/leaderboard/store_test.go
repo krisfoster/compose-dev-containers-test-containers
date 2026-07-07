@@ -87,6 +87,97 @@ func TestRedisScoreStoreWriteAppendsRatherThanOverwrites(t *testing.T) {
 	}
 }
 
+func TestRedisScoreStoreTopOnEmptyStream(t *testing.T) {
+	store, _ := newTestRedisStore(t)
+
+	entries, err := store.Top(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Top: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Top on empty stream = %+v, want empty slice", entries)
+	}
+}
+
+// FR-003 (specs/004-leaderboard-page/spec.md): standings are ordered by score
+// descending.
+func TestRedisScoreStoreTopOrdersByScoreDescending(t *testing.T) {
+	store, _ := newTestRedisStore(t)
+	ctx := context.Background()
+
+	for _, e := range []Entry{{Name: "low", Score: 5}, {Name: "high", Score: 50}, {Name: "mid", Score: 20}} {
+		if err := store.Write(ctx, e); err != nil {
+			t.Fatalf("Write(%+v): %v", e, err)
+		}
+	}
+
+	got, err := store.Top(ctx, 10)
+	if err != nil {
+		t.Fatalf("Top: %v", err)
+	}
+	want := []Entry{{Name: "high", Score: 50}, {Name: "mid", Score: 20}, {Name: "low", Score: 5}}
+	if len(got) != len(want) {
+		t.Fatalf("Top returned %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Top()[%d] = %+v, want %+v (full: %+v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// Edge case (spec.md): two entries with the exact same score are both shown, with the
+// most recently written one ranked first.
+func TestRedisScoreStoreTopBreaksTiesByMostRecentFirst(t *testing.T) {
+	store, _ := newTestRedisStore(t)
+	ctx := context.Background()
+
+	if err := store.Write(ctx, Entry{Name: "first", Score: 10}); err != nil {
+		t.Fatalf("Write (first): %v", err)
+	}
+	if err := store.Write(ctx, Entry{Name: "second", Score: 10}); err != nil {
+		t.Fatalf("Write (second): %v", err)
+	}
+
+	got, err := store.Top(ctx, 10)
+	if err != nil {
+		t.Fatalf("Top: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "second" || got[1].Name != "first" {
+		t.Fatalf("Top = %+v, want [second, first] (most recent tie wins)", got)
+	}
+}
+
+// FR-004: the returned list is bounded to limit even when more entries exist.
+func TestRedisScoreStoreTopRespectsLimit(t *testing.T) {
+	store, _ := newTestRedisStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		if err := store.Write(ctx, Entry{Name: "player", Score: i}); err != nil {
+			t.Fatalf("Write (%d): %v", i, err)
+		}
+	}
+
+	got, err := store.Top(ctx, 2)
+	if err != nil {
+		t.Fatalf("Top: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Top with limit 2 returned %d entries, want 2: %+v", len(got), got)
+	}
+	if got[0].Score != 4 || got[1].Score != 3 {
+		t.Fatalf("Top(2) = %+v, want the two highest scores [4, 3]", got)
+	}
+}
+
+func TestRedisScoreStoreTopPropagatesConnectionError(t *testing.T) {
+	store := unreachableStore()
+	if _, err := store.Top(context.Background(), 10); err == nil {
+		t.Fatal("Top against an unreachable Redis returned no error")
+	}
+}
+
 func unreachableStore() *RedisScoreStore {
 	client := redis.NewClient(&redis.Options{
 		Addr:        "127.0.0.1:1",

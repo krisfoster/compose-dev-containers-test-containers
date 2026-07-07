@@ -1,12 +1,15 @@
-// Package leaderboard implements score submission for Crossy Whale: validating and
-// authorizing a player's completed-attempt name/score (handler.go) and durably
-// recording it (store.go). See
-// specs/003-leaderboard-score-submission/contracts/leaderboard-openapi.yaml for the
-// full HTTP contract.
+// Package leaderboard implements score submission and standings retrieval for Crossy
+// Whale: validating/authorizing a write, ranking reads, (handler.go) and durably
+// recording/reading entries (store.go). See
+// specs/004-leaderboard-page/contracts/leaderboard-openapi.yaml for the full HTTP
+// contract (the canonical, current version — see that file's header for history).
 package leaderboard
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strconv"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -32,6 +35,35 @@ type ScoreStore interface {
 	// existing entry — every call adds exactly one new record, even if an entry with
 	// the same name already exists.
 	Write(ctx context.Context, entry Entry) error
+
+	// Top returns up to limit Leaderboard Entries, ranked by score descending with
+	// ties broken by most-recently-written first (specs/004-leaderboard-page/spec.md
+	// FR-002 through FR-004). Returns an empty, non-nil slice if no entries exist.
+	Top(ctx context.Context, limit int) ([]Entry, error)
+}
+
+// RankTop sorts entries — assumed to be in oldest-to-newest write order — by score
+// descending, breaking ties by most-recently-written first, and truncates to at most
+// limit results. Shared by RedisScoreStore.Top and the in-memory fake in
+// leaderboardtest so both rank identically (research.md §1).
+func RankTop(entries []Entry, limit int) []Entry {
+	ranked := make([]Entry, len(entries))
+	copy(ranked, entries)
+
+	// Reverse to newest-first so a stable sort-by-score preserves "most recent wins
+	// ties" without needing to track each entry's original stream position.
+	for i, j := 0, len(ranked)-1; i < j; i, j = i+1, j-1 {
+		ranked[i], ranked[j] = ranked[j], ranked[i]
+	}
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
+
+	if limit < 0 {
+		limit = 0
+	}
+	if limit < len(ranked) {
+		ranked = ranked[:limit]
+	}
+	return ranked
 }
 
 // RedisScoreStore is the production ScoreStore, backed by a Redis Stream.
@@ -53,4 +85,28 @@ func (s *RedisScoreStore) Write(ctx context.Context, entry Entry) error {
 			"score": entry.Score,
 		},
 	}).Err()
+}
+
+// Top implements ScoreStore. It reads the entire stream (booth-scale — at most a few
+// hundred entries per event, plan.md Scale/Scope) rather than maintaining a separate
+// ranked structure, per research.md §1.
+func (s *RedisScoreStore) Top(ctx context.Context, limit int) ([]Entry, error) {
+	msgs, err := s.client.XRange(ctx, scoresStreamKey, "-", "+").Result()
+	if err != nil {
+		return nil, err
+	}
+
+	// msgs is oldest-to-newest (XRange ascending), matching RankTop's expected input.
+	entries := make([]Entry, 0, len(msgs))
+	for _, msg := range msgs {
+		name, _ := msg.Values["name"].(string)
+		scoreStr, _ := msg.Values["score"].(string)
+		score, err := strconv.Atoi(scoreStr)
+		if err != nil {
+			return nil, fmt.Errorf("leaderboard: malformed score in stream entry %s: %w", msg.ID, err)
+		}
+		entries = append(entries, Entry{Name: name, Score: score})
+	}
+
+	return RankTop(entries, limit), nil
 }

@@ -1,0 +1,172 @@
+openapi: 3.0.3
+info:
+  title: Crossy Whale Leaderboard API
+  description: >
+    Full leaderboard surface for Crossy Whale: writing a completed attempt's name and score
+    (specs/003-leaderboard-score-submission/spec.md, FR-006 through FR-013) and reading current
+    top-N standings (specs/004-leaderboard-page/spec.md, FR-005, FR-012, FR-013). This document
+    supersedes specs/003-leaderboard-score-submission/contracts/leaderboard-openapi.yaml as the
+    canonical contract — the POST operation is carried over unchanged; GET is new.
+  version: "1.1.0"
+servers:
+  - description: Local presenter access (ungated)
+    url: http://localhost:8080
+  - description: Public access, once granted through the QR gate (002-qr-gated-access)
+    url: http://localhost:8081
+paths:
+  /api/leaderboard/scores:
+    post:
+      operationId: submitScore
+      summary: Record one completed game attempt's name and score.
+      description: >
+        Appends a new Leaderboard Entry. Every accepted call creates a new entry —
+        repeat submissions under the same name never overwrite a prior entry
+        (FR-007, FR-008 of specs/003-leaderboard-score-submission/spec.md).
+      security:
+        - leaderboardCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreSubmission'
+            examples:
+              default:
+                value:
+                  name: "kris"
+                  score: 42
+      responses:
+        "201":
+          description: Score accepted and recorded as a new Leaderboard Entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreSubmissionAccepted'
+        "400":
+          description: >
+            Validation failure — name empty/too long, or score missing/negative/
+            non-integer. No entry is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          description: >
+            Missing or invalid credential (FR-012). No entry is written. Identical
+            response regardless of whether the credential was absent or simply
+            wrong, to avoid leaking which case occurred.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      operationId: listStandings
+      summary: Retrieve current top-N leaderboard standings, ranked by score.
+      description: >
+        Returns the top-scoring completed attempts, highest score first, ties broken by most
+        recently recorded first (specs/004-leaderboard-page/spec.md FR-002, FR-003, FR-004). No
+        credential is required (FR-013) — this endpoint is intentionally open, matching the
+        ungated leaderboard display page.
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: >
+            Maximum number of standings to return. Defaults to 10 if omitted. Values above the
+            hard maximum are clamped rather than rejected, so the response is always bounded
+            (FR-004).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        "200":
+          description: >
+            Current standings, ordered highest score first. An empty array is a valid response
+            when no entries have been recorded yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingsResponse'
+              examples:
+                default:
+                  value:
+                    standings:
+                      - rank: 1
+                        name: "kris"
+                        score: 42
+                      - rank: 2
+                        name: "mo"
+                        score: 17
+                empty:
+                  value:
+                    standings: []
+        "500":
+          description: Standings could not be retrieved (e.g. the store is temporarily unreachable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    leaderboardCredential:
+      type: apiKey
+      in: header
+      name: X-Leaderboard-Token
+      description: >
+        Shared secret known only to the legitimate game client, injected
+        server-side into the served game page (specs/003-leaderboard-score-submission/
+        research.md §4). Not a per-player or per-session credential — one global value for the
+        write endpoint only. The read endpoint (GET) does not use this scheme.
+  schemas:
+    ScoreSubmission:
+      type: object
+      required: [name, score]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: Player-entered display name, trimmed of leading/trailing whitespace.
+          example: "kris"
+        score:
+          type: integer
+          minimum: 0
+          description: Score achieved in this single completed attempt.
+          example: 42
+    ScoreSubmissionAccepted:
+      type: object
+      properties:
+        recorded:
+          type: boolean
+          example: true
+    Standing:
+      type: object
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+          description: 1-based position within this response's list. Computed at read time, not stored.
+          example: 1
+        name:
+          type: string
+          example: "kris"
+        score:
+          type: integer
+          minimum: 0
+          example: 42
+    StandingsResponse:
+      type: object
+      properties:
+        standings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Standing'
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "invalid credential"

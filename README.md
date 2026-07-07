@@ -97,9 +97,10 @@ is served by a small Go backend (`app/`) via `docker compose`, backed by Redis.
 docker compose up -d
 ```
 
-Open <http://localhost:8080/play> — that's it, no `.env` file or other setup required for local
-play. Local access is never gated behind a QR scan; the QR gate only applies to the public
-endpoint below.
+Open <http://localhost:8080/> — that's it, no `.env` file or other setup required for local play.
+It's a small landing page linking to `/play` (the game), `/host` (the QR code, for public
+sessions), and `/leaderboard` (the wall display). Local access is never gated behind a QR scan;
+the QR gate only applies to the public endpoint below.
 
 Stop it with:
 
@@ -131,8 +132,11 @@ Before playing, each player enters a display name. On death, their score is show
 Over" screen and submitted to a Redis-backed leaderboard store automatically — no extra step
 required. A "Replay" button restarts immediately, reusing the same name. Score writes are
 protected by `LEADERBOARD_API_SECRET` (set in `.env`, injected into the served game page
-automatically), so only the game client itself can record a score. There is no leaderboard
-viewing page yet — that's a separate, future feature.
+automatically), so only the game client itself can record a score.
+
+Current standings are visible at `http://localhost:8080/leaderboard` — a wall/booth display that
+refreshes itself automatically as new scores come in. Viewing it (unlike submitting a score)
+requires no credential.
 
 ### Troubleshooting
 
@@ -148,9 +152,10 @@ Full validation walkthroughs are in
 [`specs/001-host-webapp-ngrok/quickstart.md`](specs/001-host-webapp-ngrok/quickstart.md) (local +
 public hosting),
 [`specs/002-qr-gated-access/quickstart.md`](specs/002-qr-gated-access/quickstart.md) (the QR gate),
-and
 [`specs/003-leaderboard-score-submission/quickstart.md`](specs/003-leaderboard-score-submission/quickstart.md)
-(name entry, Game Over, and leaderboard score submission).
+(name entry, Game Over, and leaderboard score submission), and
+[`specs/004-leaderboard-page/quickstart.md`](specs/004-leaderboard-page/quickstart.md) (the
+`/leaderboard` wall display).
 
 ## References
 

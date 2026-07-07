@@ -22,6 +22,10 @@ type FakeScoreStore struct {
 	// WriteErr, if set, is returned by Write instead of recording an entry — useful
 	// for exercising a handler's failure path.
 	WriteErr error
+
+	// TopErr, if set, is returned by Top instead of ranked entries — useful for
+	// exercising the GET handler's failure path.
+	TopErr error
 }
 
 // Write implements leaderboard.ScoreStore.
@@ -33,6 +37,17 @@ func (f *FakeScoreStore) Write(_ context.Context, entry leaderboard.Entry) error
 	}
 	f.Entries = append(f.Entries, entry)
 	return nil
+}
+
+// Top implements leaderboard.ScoreStore, ranking the same way RedisScoreStore.Top does
+// (leaderboard.RankTop) so handler tests against this fake exercise identical logic.
+func (f *FakeScoreStore) Top(_ context.Context, limit int) ([]leaderboard.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.TopErr != nil {
+		return nil, f.TopErr
+	}
+	return leaderboard.RankTop(f.Entries, limit), nil
 }
 
 // Len reports how many entries have been recorded so far.

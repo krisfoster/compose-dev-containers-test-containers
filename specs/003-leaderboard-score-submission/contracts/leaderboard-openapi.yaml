@@ -7,6 +7,10 @@ info:
     specs/003-leaderboard-score-submission/spec.md). Reading/browsing the leaderboard
     is explicitly out of scope for this API version (FR-015) and is left to a future
     feature.
+
+    SUPERSEDED: specs/004-leaderboard-page/contracts/leaderboard-openapi.yaml is now the
+    canonical contract for this API (it carries this POST operation over unchanged and adds
+    the GET read operation this document deferred). Kept here for history only.
   version: "1.0.0"
 servers:
   - description: Local presenter access (ungated)

@@ -29,6 +29,11 @@ const testIndexHTMLTemplate = `<html><script>window.__LEADERBOARD_TOKEN__ = "{{.
 // testLeaderboardSecret — what a request to /play should actually receive.
 const testIndexHTMLRendered = `<html><script>window.__LEADERBOARD_TOKEN__ = "` + testLeaderboardSecret + `";</script>game</html>`
 
+// testScriptJS is a stand-in for the real frontend/game/script.js, just to prove the
+// root-path asset fallthrough (handleRootOrAsset) still serves non-"/" paths from
+// frontendDir rather than the getting-started landing page.
+const testScriptJS = `console.log("fake game script");`
+
 // newTestApp builds an App wired to an in-memory fake WindowStore, a fake in-memory
 // ScoreStore, and a fake ngrok inspection API, so these tests never touch a real
 // container or the network (constitution Principle III reserves real Redis for the
@@ -46,6 +51,9 @@ func newTestApp(t *testing.T) (*App, *gatetest.FakeWindowStore) {
 	frontendDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(frontendDir, "index.html"), []byte(testIndexHTMLTemplate), 0o644); err != nil {
 		t.Fatalf("write fake index.html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(frontendDir, "script.js"), []byte(testScriptJS), 0o644); err != nil {
+		t.Fatalf("write fake script.js: %v", err)
 	}
 
 	store := &gatetest.FakeWindowStore{}
@@ -205,6 +213,47 @@ func TestHandleHostRotateRejectsGet(t *testing.T) {
 	}
 }
 
+// The bare "/" must serve the getting-started landing page, not the raw
+// (credential-broken) game file — this is what closes the silent score-submission
+// failure a player hits by opening "/" instead of "/play".
+func TestHandleRootServesGettingStartedPage(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`href="/play"`, `href="/host"`, `href="/leaderboard"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("landing page missing link %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "__LEADERBOARD_TOKEN__") {
+		t.Fatal("landing page must not be the raw (credential-broken) game file")
+	}
+}
+
+// Non-root paths (game assets like script.js) must still fall through to the static
+// file server, not the getting-started page.
+func TestHandleRootFallsThroughToStaticAssets(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/script.js", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != testScriptJS {
+		t.Fatalf("body = %q, want the raw script.js content %q", rec.Body.String(), testScriptJS)
+	}
+}
+
 // FR-004: the ungated listener serves /play with no cookie and no token required.
 func TestUngatedPlayRequiresNoGate(t *testing.T) {
 	app, _ := newTestApp(t)
@@ -281,6 +330,45 @@ func TestGatedPlayAllowsValidToken(t *testing.T) {
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d (redirect after granting access)", rec.Code, http.StatusFound)
+	}
+}
+
+// FR-011 (specs/004-leaderboard-page/spec.md): /leaderboard is reachable on both
+// listeners with no credential or gating step.
+func TestHandleLeaderboardPageOnBothListeners(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	for name, mux := range map[string]http.Handler{"ungated": app.ungatedMux(), "gated": app.gatedMux()} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/leaderboard", nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+				t.Fatalf("Content-Type = %q, want text/html", ct)
+			}
+		})
+	}
+}
+
+// The page's own script (not exercised by this Go test) is what actually fetches and
+// polls standings; this only asserts the served markup wires up the expected pieces.
+func TestHandleLeaderboardPageWiresUpFetchAndPolling(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/leaderboard", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `fetch('/api/leaderboard/scores')`) {
+		t.Fatal("leaderboard page missing the standings fetch() call")
+	}
+	if !strings.Contains(body, "setInterval(refresh") {
+		t.Fatal("leaderboard page missing the recurring refresh interval")
 	}
 }
 
