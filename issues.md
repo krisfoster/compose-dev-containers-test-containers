@@ -4,7 +4,6 @@ Running list of known issues and feature ideas. Not prioritized or scheduled —
 
 ## Open
 
-6. **Container/bug-themed obstacles.** Update the game so some obstacles are container/bug themed (e.g. large bugs, tumbleweed, etc.) — options to be discussed at implementation time.
 
 7. **K8s manifest generation via Compose Bridge.** Add support for using the Docker Compose Bridge to generate Kubernetes manifests from the compose file, so the app can be deployed to a k8s cluster. Add scripts to easily deploy the generated manifests to a local k8s cluster running on Docker desktop (Kind cluer). Use the industry standard tools to do this - no surprises, it should work as expected.
 
@@ -36,3 +35,5 @@ Running list of known issues and feature ideas. Not prioritized or scheduled —
 5. ✅ **Leaderboard page.** A standalone Go-based app/page that dynamically refreshes by polling/calling the leaderboard API. _(Implemented — see [`specs/004-leaderboard-page`](specs/004-leaderboard-page).)_
 
 12. ✅ **Add CC attributions to the game.** They should be there, but they are not. If allowed, add the CC attributions on the start view of the app, where the user enters their name. Also add a link to the game to get to the leader-board.
+
+6. ✅ **Container/bug-themed obstacles.** Update the game so some obstacles are container/bug themed. _(Implemented — see [`specs/010-container-obstacles`](specs/010-container-obstacles). Truck-lane obstacles replaced with the "Container" 3D model (CC BY 4.0, Willy Decarpentrie) loaded via GLTFLoader, with voxel fallback.)_
