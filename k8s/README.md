@@ -1,6 +1,6 @@
 # Kubernetes Deployment
 
-Whale Runner is deployed to Kubernetes via a Helm chart in this directory.
+Kubernetes is a container orchestration system: it runs your containers across one or more nodes, handles restarts, and manages networking between services. Helm is a package manager for Kubernetes — the `k8s/` directory is a Helm chart that describes how to deploy Whale Runner. Docker Desktop's built-in Kubernetes (Settings → Kubernetes → Enable Kubernetes) provides a local single-node cluster with no extra infrastructure.
 
 ## Prerequisites
 

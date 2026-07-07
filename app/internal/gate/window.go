@@ -18,11 +18,17 @@ import (
 // when the key disappears, there is no valid window, full stop.
 const currentWindowKey = "access:window:current"
 
-// WindowStore is the seam between the gate decision and Redis. Consumers of the gate
-// (middleware, HTTP handlers) depend on this interface rather than a concrete Redis
-// client, so they can be tested against an in-memory fake (see the gatetest package)
-// while WindowStore's own Redis-backed implementation is tested against a real Redis
-// via Testcontainers-go (constitution Principle III).
+// WindowStore is the seam between the gate decision and Redis. Defining it as an
+// interface (rather than depending directly on a Redis client) serves two purposes:
+//
+// 1. Handlers and middleware are tested with an in-memory fake (see the gatetest
+//    package) — fast, no containers, covers the logic above this boundary.
+//
+// 2. The real Redis-backed implementation (RedisWindowStore below) is tested
+//    separately using Testcontainers-go, which starts a genuine Redis Docker
+//    container for the test and tears it down on completion. This catches bugs
+//    that mocks never would — for example, behaviour that changes between Redis
+//    versions, or subtle differences in how TTL expiry works in a real server.
 type WindowStore interface {
 	// Current returns the active window ID, or "" if none is currently active
 	// (never activated, or expired).

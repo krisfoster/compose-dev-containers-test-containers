@@ -77,8 +77,12 @@ type Config struct {
 
 func loadConfig() Config {
 	return Config{
-		WebPort:              envOr("APP_WEB_PORT", "8080"),
-		GatedPort:            envOr("APP_GATED_PORT", "8081"),
+		WebPort:   envOr("APP_WEB_PORT", "8080"),
+		GatedPort: envOr("APP_GATED_PORT", "8081"),
+		// REDIS_ADDR default is "redis:6379" — "redis" is the service name defined in
+		// docker-compose.yml. Docker Compose automatically provides DNS for every
+		// service, so containers in the same Compose network resolve service names to
+		// the correct container IP without any hard-coded addresses.
 		RedisAddr:            envOr("REDIS_ADDR", "redis:6379"),
 		GrantCookieSecret:    envOr("GRANT_COOKIE_SECRET", "dev-only-change-me"),
 		QRWindowTTL:          envDurationOr("QR_WINDOW_TTL", 15*time.Minute),

@@ -1,32 +1,54 @@
+# Docker Compose defines the entire application as a set of named services.
+# Running `docker compose up` starts all services together, wired on a shared
+# private network — no host-side installs beyond Docker Desktop are needed.
 name: whale-runner
 
 services:
+  # redis — in-memory data store used by the app for two things:
+  #   1. The QR-access window (a short-lived key that expires automatically).
+  #   2. The leaderboard (a Redis Stream of player scores).
+  # Redis is never exposed to the host; only the app service can reach it, via
+  # Docker Compose's built-in service DNS (see REDIS_ADDR in the app service).
+  #
+  # Docker Hardened Images (DHI): this image is pulled from dhi.io, Docker's
+  # registry of hardened base images. DHI images are built from minimal,
+  # security-hardened foundations — reduced attack surface, no unnecessary
+  # packages. The dhi.io/redis image is a drop-in replacement for redis:alpine.
+  #
+  # Protected-mode note: DHI Redis ships with protected-mode ON in its bundled
+  # redis.conf, which refuses connections from non-loopback addresses. Because
+  # Redis has no published port (expose: makes it reachable only on the internal
+  # Compose network, not the host), there is no security benefit to protected-mode
+  # here. We disable it so the app container can connect without needing a password.
   redis:
     image: dhi.io/redis:8-alpine
-    # DHI redis ships a hardened redis.conf with protected-mode ON, which refuses
-    # non-loopback connections (i.e. the app container) unless a password is set.
-    # redis has no published port here — it's reachable only on the internal compose
-    # network — so we disable protected-mode to restore the prior redis:7-alpine
-    # behaviour rather than add a password. Keep the hardened conf; just override the flag.
     command:
       - redis-server
       - /etc/redis/redis.conf
       - --protected-mode
       - "no"
+    # expose: makes port 6379 reachable by other services on the Compose network,
+    # but NOT from the host machine. Compare with ports: below, which publishes
+    # a port to the host. Redis has no ports: entry because it should only be
+    # reachable from inside the stack.
     expose:
       - "6379"
 
+  # app — the Go backend that serves the game, the QR gate, and the leaderboard.
+  # It is built from source (app/Dockerfile) rather than pulled from a registry.
   app:
     # Build context is the repo root so app/Dockerfile can COPY frontend/game into
-    # the image alongside the Go binary. The image is self-contained — no volume
-    # mounts are needed to serve the frontend.
-    # image: is set alongside build: so that docker compose build tags the image with
-    # this name, and docker compose bridge convert can reference it in K8s manifests.
+    # the image alongside the Go binary. The resulting image is self-contained —
+    # no volume mounts are needed at runtime.
     build:
       context: .
       dockerfile: app/Dockerfile
     image: whale-runner:k8s-local
     environment:
+      # REDIS_ADDR uses the service name "redis" as the hostname. Docker Compose
+      # gives every service a DNS name matching its key in this file, resolvable
+      # by any other service on the same Compose network. This is how containers
+      # discover each other without hard-coding IP addresses.
       - REDIS_ADDR=redis:6379
       - GRANT_COOKIE_SECRET=${GRANT_COOKIE_SECRET:-dev-only-change-me}
       - QR_WINDOW_TTL=${QR_WINDOW_TTL:-15m}
@@ -35,11 +57,21 @@ services:
       - FRONTEND_DIR=/frontend
       - APP_WEB_PORT=8080
       - APP_GATED_PORT=8081
+    # ports: publishes container port 8080 to the host, making the app reachable
+    # in a browser at http://localhost:8080. WEB_PORT can be overridden via .env.
     ports:
       - "${WEB_PORT:-8080}:8080"
     depends_on:
       - redis
 
+  # ngrok — creates a secure public tunnel so players can reach the game over the
+  # internet using a QR code. ngrok is optional: it only starts when you pass
+  # `--profile public` to docker compose. Profiles let you keep optional or
+  # environment-specific services in the same compose file without starting them
+  # by default.
+  #
+  # Note: ngrok/ngrok:3 is pulled from Docker Hub, not dhi.io — no hardened
+  # equivalent exists. It is only used in this optional demo-mode profile.
   ngrok:
     image: ngrok/ngrok:3
     profiles:

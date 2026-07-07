@@ -15,8 +15,13 @@ import (
 )
 
 // scoresStreamKey is the single Redis Stream all Leaderboard Entries are appended to.
-// A Stream (rather than a Sorted Set) is required because entries must never overwrite
-// one another, even under an identical name (FR-007, FR-008) — see research.md §3.
+//
+// A Redis Stream is an append-only log: every XADD call adds a new entry with a
+// unique auto-generated ID; entries are never modified or removed. This is the right
+// data structure here because every game attempt must be recorded independently —
+// two players with the same name should both appear, not overwrite each other.
+// A Redis Sorted Set, by contrast, uses the member name as a key, so a second write
+// for "Alice" would replace her first score rather than recording both.
 const scoresStreamKey = "leaderboard:scores"
 
 // Entry is one completed game attempt's recorded result.
@@ -25,11 +30,17 @@ type Entry struct {
 	Score int
 }
 
-// ScoreStore is the seam between the score-write handler and Redis. Consumers depend
-// on this interface rather than a concrete Redis client, so they can be tested against
-// an in-memory fake (see the leaderboardtest package) while the Redis-backed
-// implementation is tested against a real Redis via Testcontainers-go (constitution
-// Principle III).
+// ScoreStore is the seam between the score-write handler and Redis. Defining it as an
+// interface (rather than depending directly on a Redis client) serves two purposes:
+//
+// 1. The handler and ranking logic are tested with an in-memory fake (see the
+//    leaderboardtest package) — fast, no containers, covers validation and ordering.
+//
+// 2. The real Redis-backed implementation (RedisScoreStore below) is tested
+//    separately using Testcontainers-go, which starts a real Redis Docker container
+//    for each test run and tears it down on completion. See store_test.go for the
+//    pattern. This ensures the stream append and read logic works against actual
+//    Redis behaviour, not a simulation.
 type ScoreStore interface {
 	// Write appends entry as a new Leaderboard Entry. It never updates or removes an
 	// existing entry — every call adds exactly one new record, even if an entry with

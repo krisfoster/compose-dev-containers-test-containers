@@ -10,10 +10,26 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-// newTestRedisStore spins up a real Redis via Testcontainers-go (constitution
-// Principle III — no mocked Redis client for anything touching this boundary) and
-// returns a RedisWindowStore against it. The container is torn down when the test
-// (and any subtests sharing t) completes.
+// newTestRedisStore starts a real Redis container using Testcontainers-go and
+// returns a RedisWindowStore connected to it.
+//
+// Testcontainers-go is a Go library that starts Docker containers as part of a
+// test. Each call to tcredis.Run() pulls and starts a Redis container, maps a
+// random host port to Redis's 6379, and returns a handle. The container is
+// automatically stopped and removed when the test ends (t.Cleanup).
+//
+// Why a real container instead of a mock? A mock Redis client can be programmed
+// to return the right answers, but it cannot reproduce the actual behaviour of
+// Redis — TTL expiry timing, SET-then-GET round-trips, stream semantics. Tests
+// that passed against a mock have broken in production when a Redis command's
+// argument order changed, or when a default config behaved differently than
+// expected. A real container gives the same confidence as a production deployment
+// at the cost of a few extra seconds per test run.
+//
+// DHI note: the container uses dhi.io/redis:8-alpine (the same hardened image as
+// production). Its bundled redis.conf enables protected-mode, which blocks
+// connections from the mapped host port. The command override below disables it
+// so the test client can connect; this mirrors the override in docker-compose.yml.
 func newTestRedisStore(t *testing.T) *RedisWindowStore {
 	t.Helper()
 	ctx := context.Background()

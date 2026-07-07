@@ -10,11 +10,21 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-// newTestRedisStore spins up a real Redis via Testcontainers-go (constitution
-// Principle III — no mocked Redis client for anything touching this boundary) and
-// returns a RedisScoreStore against it, plus the raw client for assertions the
-// ScoreStore interface itself doesn't expose. The container is torn down when the
-// test (and any subtests sharing t) completes.
+// newTestRedisStore starts a real Redis container using Testcontainers-go and
+// returns a RedisScoreStore connected to it, plus the raw client for assertions
+// that the ScoreStore interface itself doesn't expose.
+//
+// Testcontainers-go starts an actual Docker container as part of the test.
+// Each call to tcredis.Run() pulls the Redis image, maps a random host port to
+// Redis's 6379, and returns a handle. The container is stopped and removed when
+// the test ends (t.Cleanup). This means tests run against real Redis — the same
+// stream semantics, the same append behaviour, the same XRANGE output format —
+// rather than against a mock that could silently diverge from the real thing.
+//
+// DHI note: the container uses dhi.io/redis:8-alpine (matching production). Its
+// hardened redis.conf enables protected-mode, blocking connections via the mapped
+// host port. The command override below disables it for the test — the same fix
+// applied in docker-compose.yml.
 func newTestRedisStore(t *testing.T) (*RedisScoreStore, *redis.Client) {
 	t.Helper()
 	ctx := context.Background()
