@@ -52,15 +52,51 @@ Open [`docker-compose.yml`](docker-compose.yml).
 
 **What Docker Compose does**: a single `docker-compose.yml` file declares every service your application needs — what image to use, what ports to expose, what environment variables to set, and how services depend on each other. `docker compose up` reads that file and starts everything.
 
-**The three services**: this project defines `redis`, `app`, and `ngrok`. Look at the top of the file to see them listed under `services:`.
+**The three services**: this project defines `redis`, `app`, and `ngrok` under the top-level `services:` key:
 
-**How services discover each other**: find `REDIS_ADDR=redis:6379` in the `app` service's `environment:` block. The value `redis` is not a hostname you configured — it is the name of the service in this file. Docker Compose automatically provides DNS so every service can reach any other by its service name. No hard-coded IP addresses needed.
+```yaml
+services:
+  redis:   # in-memory data store
+  app:     # Go backend — built from source
+  ngrok:   # public tunnel (optional)
+```
 
-**`expose:` vs `ports:`**: the `redis` service uses `expose: "6379"`. This makes the port reachable to other services on the internal Compose network, but not to your host machine. The `app` service uses `ports: "8080:8080"`, which publishes the container port to your host so you can open it in a browser.
+**How services discover each other**: Docker Compose automatically provides DNS so every service can reach any other by its service name. Look at the `environment:` block of the `app` service:
 
-**Environment variables as configuration**: every runtime setting (secrets, addresses, TTLs) is passed to the `app` container via `environment:`. Values that aren't set in `.env` fall back to safe development defaults. This is how twelve-factor apps are configured.
+```yaml
+environment:
+  - REDIS_ADDR=redis:6379
+```
 
-**Profiles for optional services**: the `ngrok` service has `profiles: [public]`. It only starts when you add `--profile public` to the compose command. Profiles let you keep optional or environment-specific services in the same file without starting them by default.
+The value `redis` is not a hostname you configured — it is the name of the `redis` service in this file. No hard-coded IP addresses needed.
+
+**`expose:` vs `ports:`**: these two keys control who can reach a port.
+
+```yaml
+redis:
+  expose:
+    - "6379"    # reachable by other services, NOT the host machine
+
+app:
+  ports:
+    - "8080:8080"   # published to the host — open in a browser
+```
+
+**Environment variables as configuration**: every runtime setting (secrets, addresses, TTLs) is passed to the `app` container via `environment:`. Values that aren't set fall back to safe development defaults:
+
+```yaml
+environment:
+  - GRANT_COOKIE_SECRET=${GRANT_COOKIE_SECRET:-dev-only-change-me}
+  - QR_WINDOW_TTL=${QR_WINDOW_TTL:-15m}
+```
+
+**Profiles for optional services**: the `ngrok` service has `profiles: [public]`. It only starts when you add `--profile public` to the compose command. Profiles let you keep optional or environment-specific services in the same file without starting them by default:
+
+```yaml
+ngrok:
+  profiles:
+    - public
+```
 
 ---
 
