@@ -1,0 +1,12 @@
+#! Chart.yaml
+apiVersion: v2
+name: whale-runner
+version: 0.0.1
+# kubeVersion: >= 1.29.1
+description: A generated Helm Chart for whale-runner generated via compose-bridge.
+type: application
+keywords:
+    - whale-runner
+appVersion: 'v0.0.1'
+sources:
+annotations:

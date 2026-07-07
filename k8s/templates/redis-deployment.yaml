@@ -1,0 +1,41 @@
+#! redis-deployment.yaml
+# Generated code, do not edit
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: redis
+    namespace: {{ .Values.namespace }}
+    labels:
+        com.docker.compose.project: whale-runner
+        com.docker.compose.service: redis
+        app.kubernetes.io/managed-by: Helm
+spec:
+    replicas: {{ .Values.deployment.defaultReplicas }}
+    selector:
+        matchLabels:
+            com.docker.compose.project: whale-runner
+            com.docker.compose.service: redis
+    strategy:
+        type: {{ .Values.deployment.strategy }}
+    template:
+        metadata:
+            labels:
+                com.docker.compose.project: whale-runner
+                com.docker.compose.service: redis
+        spec:
+            containers:
+                - name: redis
+                  image: {{ .Values.redis.image }}
+                  imagePullPolicy: {{ .Values.redis.imagePullPolicy }}
+                  args:
+                    - redis-server
+                    - /etc/redis/redis.conf
+                    - --protected-mode
+                    - "no"
+                  resources:
+                    limits:
+                        cpu: {{ .Values.resources.defaultCpuLimit }}
+                        memory: {{ .Values.resources.defaultMemoryLimit }}
+                  ports:
+                    - name: redis-6379
+                      containerPort: 6379

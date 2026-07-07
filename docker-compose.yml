@@ -1,3 +1,5 @@
+name: whale-runner
+
 services:
   redis:
     image: dhi.io/redis:8-alpine
@@ -6,10 +8,24 @@ services:
     # redis has no published port here — it's reachable only on the internal compose
     # network — so we disable protected-mode to restore the prior redis:7-alpine
     # behaviour rather than add a password. Keep the hardened conf; just override the flag.
-    command: ["redis-server", "/etc/redis/redis.conf", "--protected-mode", "no"]
+    command:
+      - redis-server
+      - /etc/redis/redis.conf
+      - --protected-mode
+      - "no"
+    expose:
+      - "6379"
 
   app:
-    build: ./app
+    # Build context is the repo root so app/Dockerfile can COPY frontend/game into
+    # the image alongside the Go binary. The image is self-contained — no volume
+    # mounts are needed to serve the frontend.
+    # image: is set alongside build: so that docker compose build tags the image with
+    # this name, and docker compose bridge convert can reference it in K8s manifests.
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    image: whale-runner:k8s-local
     environment:
       - REDIS_ADDR=redis:6379
       - GRANT_COOKIE_SECRET=${GRANT_COOKIE_SECRET:-dev-only-change-me}
@@ -19,8 +35,6 @@ services:
       - FRONTEND_DIR=/frontend
       - APP_WEB_PORT=8080
       - APP_GATED_PORT=8081
-    volumes:
-      - ./frontend/game:/frontend:ro
     ports:
       - "${WEB_PORT:-8080}:8080"
     depends_on:

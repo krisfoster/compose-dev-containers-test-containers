@@ -1,0 +1,49 @@
+#! app-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: app
+    namespace: {{ .Values.namespace }}
+    labels:
+        com.docker.compose.project: whale-runner
+        com.docker.compose.service: app
+        app.kubernetes.io/managed-by: Helm
+spec:
+    replicas: {{ .Values.deployment.defaultReplicas }}
+    selector:
+        matchLabels:
+            com.docker.compose.project: whale-runner
+            com.docker.compose.service: app
+    strategy:
+        type: {{ .Values.deployment.strategy }}
+    template:
+        metadata:
+            labels:
+                com.docker.compose.project: whale-runner
+                com.docker.compose.service: app
+        spec:
+            containers:
+                - name: app
+                  image: {{ .Values.app.image }}
+                  imagePullPolicy: {{ .Values.app.imagePullPolicy }}
+                  env:
+                    - name: REDIS_ADDR
+                      value: "redis:6379"
+                    - name: GRANT_COOKIE_SECRET
+                      value: {{ .Values.app.grantCookieSecret | quote }}
+                    - name: QR_WINDOW_TTL
+                      value: {{ .Values.app.qrWindowTTL | quote }}
+                    - name: LEADERBOARD_API_SECRET
+                      value: {{ .Values.app.leaderboardAPISecret | quote }}
+                    - name: NGROK_API_URL
+                      value: "http://ngrok:4040/api/tunnels"
+                    - name: FRONTEND_DIR
+                      value: "/frontend"
+                    - name: APP_WEB_PORT
+                      value: "8080"
+                    - name: APP_GATED_PORT
+                      value: "8081"
+                  resources:
+                    limits:
+                        cpu: {{ .Values.resources.defaultCpuLimit }}
+                        memory: {{ .Values.resources.defaultMemoryLimit }}

@@ -37,3 +37,11 @@ go.work.sum
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# Kubernetes local config
+kubeconfig*
+.kube/
+
+# Generated Kubernetes manifests (docker compose bridge convert output)
+out/
+.docker-compose-bridge.yml
