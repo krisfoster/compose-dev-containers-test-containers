@@ -89,7 +89,19 @@ Inside the sandbox, Claude Code sees `.claude/settings.json` (GSD plugin, status
 **Crossy Whale** (`frontend/game/`, a browser-based Crossy Road clone starring the Docker whale)
 is served by a small Go backend (`app/`) via `docker compose`, backed by Redis.
 
-**Prerequisites**: Docker Desktop (or Docker Engine + Compose v2). Nothing else to install.
+**Prerequisites**:
+
+- Docker Desktop (or Docker Engine + Compose v2). Nothing else to install.
+- A free [Docker account](https://hub.docker.com/signup) and a one-time login to the Docker
+  Hardened Images registry, since the app and Redis run on hardened base images pulled from
+  `dhi.io`:
+
+  ```bash
+  docker login dhi.io        # use your free Docker ID; pulling DHI Community images is free
+  ```
+
+  (The one exception is the optional `ngrok` tunnel below — it has no hardened image and is pulled
+  from Docker Hub as usual, only when you opt into public access.)
 
 ### Run it locally
 
@@ -111,7 +123,9 @@ docker compose down
 ### Make it publicly accessible (optional)
 
 Sharing a public URL (e.g. for attendees to join over wifi/cellular data) needs a free
-[ngrok](https://ngrok.com) account and its authtoken:
+[ngrok](https://ngrok.com) account and its authtoken. Note that `ngrok/ngrok:3` is the one image
+**not** migrated to Docker Hardened Images — no hardened equivalent exists, and it only runs in this
+optional demo-only `public` profile (never on the core local path):
 
 ```bash
 cp .env.example .env           # once
@@ -119,6 +133,12 @@ cp .env.example .env           # once
 docker compose --profile public up -d
 open http://localhost:8080/host   # shows the current QR code, with a button to rotate it
 ```
+
+**Inspecting the tunnel.** ngrok's local web inspector — the current public URL plus a live request
+log — is served at <http://localhost:4040> while the `public` profile is running. When you develop
+inside the sbx sandbox, `bin/claude` automatically publishes both the app port (`WEB_PORT`, default
+8080) and ngrok's `4040` from the sandbox to your host on launch, printing the URLs; on a plain host
+the compose `4040:4040` mapping already exposes it on `localhost` directly.
 
 The public URL only serves the game to a visitor who has scanned the current QR code (or held a
 grant from a previous scan) — anyone else reaching it sees a "scan the QR code to play" message
@@ -147,6 +167,13 @@ requires no credential.
   `docker compose --profile public ps` and `NGROK_AUTHTOKEN` in `.env`.
 - **Scanned QR code doesn't work anymore**: it may have expired (default 15 minutes,
   `QR_WINDOW_TTL` in `.env`) or been rotated from `/host` — get the current code and re-scan.
+- **Redis errors (`/host` → 503, leaderboard → "failed to load standings", `DENIED Redis is running
+  in protected mode`)**: the Docker Hardened Images Redis ships with `protected-mode` **on**, which
+  rejects connections from other containers. This project disables it in `docker-compose.yml`
+  (`command: ["redis-server", "/etc/redis/redis.conf", "--protected-mode", "no"]`) because Redis has
+  no published port and is reachable only on the internal compose network. If you see these errors,
+  that override is missing or was edited out. Full explanation and the tests' equivalent fix:
+  [`specs/005-dhi-image-migration/contracts/image-inventory.md`](specs/005-dhi-image-migration/contracts/image-inventory.md#known-configuration-difference-dhi-redis-enables-protected-mode).
 
 Full validation walkthroughs are in
 [`specs/001-host-webapp-ngrok/quickstart.md`](specs/001-host-webapp-ngrok/quickstart.md) (local +
@@ -156,6 +183,23 @@ public hosting),
 (name entry, Game Over, and leaderboard score submission), and
 [`specs/004-leaderboard-page/quickstart.md`](specs/004-leaderboard-page/quickstart.md) (the
 `/leaderboard` wall display).
+
+## Develop inside a Dev Container
+
+VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) is the recommended local development environment. Opening the project in a dev container gives you a fully-equipped Go 1.25 workspace with no host-side installs beyond Docker Desktop and git.
+
+**Prerequisites**: Docker Desktop running on the host, VS Code, Dev Containers extension installed.
+
+**Open in one step**: Open the repo folder in VS Code, then when prompted click **Reopen in Container** (or use the Command Palette: `Dev Containers: Reopen in Container`). The first build takes a few minutes; subsequent opens are instant.
+
+**What you get inside the container**:
+
+- Go 1.25 toolchain — `go build ./...` and `go test ./...` work immediately
+- Docker CLI connected to the host daemon — `docker compose up` runs the full app stack (game, leaderboard, Redis) from inside the container; the game is accessible in your host browser at <http://localhost:8080>
+- Testcontainers-based integration tests work — the Go tests that spin up a real Redis container (`internal/leaderboard/`, `internal/gate/`) pass inside the dev container, no extra setup required
+- Go editor intelligence — autocomplete, go-to-definition, inline errors, and auto-format on save via the official Go extension
+
+**Full validation walkthrough**: [`specs/006-dev-container-support/quickstart.md`](specs/006-dev-container-support/quickstart.md)
 
 ## References
 

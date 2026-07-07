@@ -70,9 +70,44 @@ fi
 # sandbox's own container filesystem, so it never survives recreation
 # otherwise.
 SANDBOX_NAME="claude-$(basename "$REPO_ROOT")"
+
+# --- Publish sandbox service ports to the host ---------------------------------------
+# Services running inside the sandbox are NOT reachable from the host until their port
+# is published with `sbx ports <name> --publish HOST:SANDBOX`. We publish two:
+#
+#   • WEB_PORT (default 8080, read from .env) — the Crossy Whale web app.
+#       docker-compose.yml maps "${WEB_PORT}:8080", so once `docker compose up` runs
+#       inside the sandbox the game is reachable at http://localhost:$WEB_PORT.
+#
+#   • NGROK_INSPECT_PORT (4040, fixed) — ngrok's local web inspector (shows the current
+#       public tunnel URL and a live request log). docker-compose.yml maps "4040:4040"
+#       on the `ngrok` service, which only runs under `docker compose --profile public
+#       up`. Publishing 4040 unconditionally is harmless: until the ngrok service is up
+#       the forwarded port simply has nothing to connect to.
+#
+# Notes / caveats:
+#   • `sbx ports` targets an EXISTING sandbox, so this runs only on the re-attach path.
+#     On the very first launch the sandbox is created by the `exec sbx run` below (and
+#     exec never returns), so nothing is published that first time — it happens from the
+#     next launch onward, or run the commands printed below once the sandbox is up.
+#   • Both publishes are idempotent and guarded with `|| true`: an already-published
+#     port, a host-side port clash, or any sbx hiccup must never block launching Claude.
+#   • HOST and SANDBOX port numbers are kept identical (e.g. 8080:8080) for predictability.
+WEB_PORT="$(sed -n 's/^[[:space:]]*WEB_PORT=[[:space:]]*//p' "$REPO_ROOT/.env" 2>/dev/null | tail -1 | tr -d '\042\047 ' || true)"
+WEB_PORT="${WEB_PORT:-8080}"
+NGROK_INSPECT_PORT=4040   # fixed: docker-compose.yml hardcodes 4040:4040 on the ngrok service
+
 if sbx ls -q 2>/dev/null | grep -qxF "$SANDBOX_NAME"; then
+  sbx ports "$SANDBOX_NAME" --publish "${WEB_PORT}:${WEB_PORT}/tcp"                     >/dev/null 2>&1 || true
+  sbx ports "$SANDBOX_NAME" --publish "${NGROK_INSPECT_PORT}:${NGROK_INSPECT_PORT}/tcp" >/dev/null 2>&1 || true
+  echo "→ app:           http://localhost:${WEB_PORT}   (once 'docker compose up' is running inside)"
+  echo "→ ngrok inspect: http://localhost:${NGROK_INSPECT_PORT}   (only under 'docker compose --profile public up')"
   exec sbx run claude "$@"
 else
+  echo "ℹ  first launch — the sandbox is being created now; expose its services to your host with:"
+  echo "     sbx ports $SANDBOX_NAME --publish ${WEB_PORT}:${WEB_PORT}/tcp                     # web app"
+  echo "     sbx ports $SANDBOX_NAME --publish ${NGROK_INSPECT_PORT}:${NGROK_INSPECT_PORT}/tcp   # ngrok inspector (public profile only)"
+  echo "   (both are published automatically on your next '$0' launch.)"
   exec sbx run claude \
     --static-mcp github,context7 \
     --kit "$REPO_ROOT/kits/spec-kit" \

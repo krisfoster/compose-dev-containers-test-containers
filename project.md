@@ -150,14 +150,16 @@ vibe-room/
 
 | Service | Image                     | Purpose                                    | Depends on       | Ports (host) |
 |---------|---------------------------|--------------------------------------------|------------------|--------------|
-| redis   | `redis:7-alpine`          | State, pubsub, stream                      |                  | 6379         |
+| redis   | `dhi.io/redis:8-alpine`   | State, pubsub, stream                      |                  | 6379         |
 | ollama  | `ollama/ollama:latest`    | Local LLM inference                        |                  | 11434        |
-| app     | built from local Dockerfile| Go backend, static files, WS hub          | redis, ollama    | 8080         |
-| ngrok   | `ngrok/ngrok:latest`      | Public tunnel to `app:8080`                | app              | 4040 (agent) |
+| app     | built from local Dockerfile (DHI: `dhi.io/golang:1.25-alpine-dev` → `dhi.io/static:20260611-alpine3.24`) | Go backend, static files, WS hub | redis, ollama | 8080 |
+| ngrok   | `ngrok/ngrok:3` (exempt)  | Public tunnel to `app:8080`                | app              | 4040 (agent) |
 
 Notes:
 
-- `ngrok` is only started in `public` mode. In `lan` and `kiosk` modes it should be omitted from `docker compose up` via a profile (`--profile public`).
+- All container images with a hardened equivalent are sourced from **Docker Hardened Images (DHI)**, pulled free from `dhi.io` after `docker login dhi.io`. See the full migration status in [`specs/005-dhi-image-migration/contracts/image-inventory.md`](specs/005-dhi-image-migration/contracts/image-inventory.md).
+- `ngrok` has no DHI equivalent and is **exempt** — it runs only in `public` mode (via `--profile public`) and is off the core local demo path.
+- Redis moved from the public `redis:7-alpine` to `dhi.io/redis:8-alpine` (a documented 7→8 bump: no hardened Redis 7.x exists; hardened Redis starts at 8.x).
 - `ollama` benefits from a mounted volume so the model doesn't re-download every rebuild.
 - The `app` container reads the ngrok URL by hitting `http://ngrok:4040/api/tunnels` on the internal compose network.
 - No host network mode required. All internal traffic uses the compose network.

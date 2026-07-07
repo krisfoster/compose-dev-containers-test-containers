@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	testcontainers "github.com/testcontainers/testcontainers-go"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
@@ -17,7 +18,12 @@ func newTestRedisStore(t *testing.T) *RedisWindowStore {
 	t.Helper()
 	ctx := context.Background()
 
-	container, err := tcredis.Run(ctx, "redis:7-alpine")
+	// DHI redis enables protected-mode in its bundled redis.conf, which refuses the
+	// test's connection (arriving via the mapped port, i.e. non-loopback). Override the
+	// full command — the DHI entrypoint is `tini --`, not a shim that prepends
+	// redis-server — to keep the hardened conf but disable protected-mode.
+	container, err := tcredis.Run(ctx, "dhi.io/redis:8-alpine",
+		testcontainers.WithCmd("redis-server", "/etc/redis/redis.conf", "--protected-mode", "no"))
 	if err != nil {
 		t.Fatalf("start redis container: %v", err)
 	}

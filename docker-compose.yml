@@ -1,6 +1,12 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: dhi.io/redis:8-alpine
+    # DHI redis ships a hardened redis.conf with protected-mode ON, which refuses
+    # non-loopback connections (i.e. the app container) unless a password is set.
+    # redis has no published port here — it's reachable only on the internal compose
+    # network — so we disable protected-mode to restore the prior redis:7-alpine
+    # behaviour rather than add a password. Keep the hardened conf; just override the flag.
+    command: ["redis-server", "/etc/redis/redis.conf", "--protected-mode", "no"]
 
   app:
     build: ./app

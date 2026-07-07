@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Idempotent `docker login dhi.io` for pulling Docker Hardened Images.
+#
+# Credentials come from the environment (DHI_USERNAME / DHI_TOKEN) if set,
+# otherwise they are parsed from the gitignored .envrc.local at the repo root.
+# The .envrc.local file is never sourced (that would run its $(gh auth token)
+# command substitution) — only its DHI_* lines are read as plain strings.
+#
+# Runs inside the sbx sandbox: automatically via /etc/sandbox-persistent.sh, or
+# by hand after creating a fresh sandbox. It is a no-op when credentials are
+# missing or a dhi.io login already exists, so it is safe to call repeatedly.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REGISTRY="dhi.io"
+CONFIG="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+
+# Already authenticated to dhi.io? Nothing to do.
+if grep -q "\"$REGISTRY\"" "$CONFIG" 2>/dev/null; then
+  exit 0
+fi
+
+user="${DHI_USERNAME:-}"
+token="${DHI_TOKEN:-}"
+
+# Fall back to the gitignored .envrc.local (host file, bind-mounted into the
+# sandbox). Read ONLY the DHI_* export lines; strip surrounding quotes.
+envfile="$REPO_ROOT/.envrc.local"
+if { [ -z "$user" ] || [ -z "$token" ]; } && [ -f "$envfile" ]; then
+  [ -z "$user" ]  && user="$(sed -n 's/^[[:space:]]*export[[:space:]]\{1,\}DHI_USERNAME=//p' "$envfile" | tail -1 | tr -d '\042\047')"
+  [ -z "$token" ] && token="$(sed -n 's/^[[:space:]]*export[[:space:]]\{1,\}DHI_TOKEN=//p'    "$envfile" | tail -1 | tr -d '\042\047')"
+fi
+
+# No usable credentials yet (e.g. token not filled in) → quiet no-op.
+if [ -z "$user" ] || [ -z "$token" ]; then
+  exit 0
+fi
+
+printf '%s' "$token" | docker login "$REGISTRY" -u "$user" --password-stdin

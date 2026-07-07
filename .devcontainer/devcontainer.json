@@ -1,0 +1,40 @@
+{
+  "name": "Whale Runner Dev",
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25"
+    }
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "containerEnv": {
+    "TESTCONTAINERS_HOST_OVERRIDE": "host.docker.internal"
+  },
+  // forwardPorts is intentionally empty. VS Code's port forwarding tunnels ports that
+  // are listening *inside* this container. With DooD, `docker compose up` binds ports
+  // on the host Docker daemon — not inside the dev container — so they are already
+  // accessible at localhost:8080 / 8081 / 4040 on the host without any tunneling.
+  // Adding those ports here would forward an empty socket and break browser access.
+  "forwardPorts": [],
+  "portsAttributes": {},
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "[go]": {
+          "editor.defaultFormatter": "golang.go",
+          "editor.formatOnSave": true
+        },
+        "go.toolsManagement.autoUpdate": true,
+        "go.testFlags": ["-v", "-count=1"]
+      }
+    }
+  },
+  "postCreateCommand": "cd app && go mod download"
+}
