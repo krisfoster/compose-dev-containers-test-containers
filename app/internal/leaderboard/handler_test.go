@@ -267,8 +267,8 @@ func TestHandlerListClampsOutOfRangeLimit(t *testing.T) {
 	}
 
 	invalid := decodeStandings(t, doGetRequest(h, "limit=not-a-number"))
-	if len(invalid.Standings) != 10 {
-		t.Fatalf("limit=not-a-number returned %d standings, want the default of 10", len(invalid.Standings))
+	if len(invalid.Standings) != 20 {
+		t.Fatalf("limit=not-a-number returned %d standings, want the default of 20", len(invalid.Standings))
 	}
 }
 

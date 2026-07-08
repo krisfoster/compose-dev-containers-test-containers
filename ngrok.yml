@@ -1,0 +1,11 @@
+version: 2
+# The ngrok image ships its CA bundle at a non-standard path. Point root_cas at
+# the actual file so the agent can verify ngrok's server certificate over TLS.
+# "trusted" (the shorthand for system CAs) looks for /etc/ssl/certs/ca-certificates.crt
+# which is absent in this image; the real bundle is at ca-bundle.crt.
+root_cas: /etc/ssl/certs/ca-bundle.crt
+tunnels:
+  whale-runner:
+    addr: http://app:8081
+    proto: http
+    domain: dockerdemo.ngrok.app

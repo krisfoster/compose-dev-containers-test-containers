@@ -259,6 +259,18 @@ Full validation walkthroughs are in
 
 ---
 
+## Live page refresh on redeploy
+
+The leaderboard page reloads itself automatically whenever the app is updated and restarted. It works by polling a lightweight endpoint, `/api/ping`, every two seconds. The endpoint returns a JSON object containing a startup ID, which is a nanosecond timestamp captured once when the Go process starts:
+
+```json
+{ "id": "1783513264497369178" }
+```
+
+The browser stores the first value it receives. On every subsequent poll it compares the current value to the stored one. If they differ, the process restarted (a redeploy happened) and the page calls `location.reload()` to pick up the new version. If the server is temporarily unreachable mid-restart, the fetch error is silently ignored and the next poll tries again, so there are no false reloads during the brief window while the container is coming back up.
+
+---
+
 ## Optional: Develop with Claude Code (advanced)
 
 This repo is set up so that typing `claude` inside it launches a Claude Code session **inside a Docker sbx sandbox**, with:

@@ -217,17 +217,29 @@ function checkOrientation() {
   prompt.style.display = window.innerWidth < window.innerHeight ? 'flex' : 'none';
 }
 
+// In portrait mode the screen is too narrow to see enough of the scene.
+// Zoom the camera out so ~7 lanes are visible across the width, matching
+// roughly what you'd see in landscape. In landscape the zoom stays at 1.
+function getCameraZoom() {
+  if (window.innerWidth >= window.innerHeight) return 1;
+  const targetLanes = 7;
+  return window.innerWidth / (targetLanes * positionWidth * zoom);
+}
+
 function onResize() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   camera.left = window.innerWidth / -2;
   camera.right = window.innerWidth / 2;
   camera.top = window.innerHeight / 2;
   camera.bottom = window.innerHeight / -2;
+  camera.zoom = getCameraZoom();
   camera.updateProjectionMatrix();
   checkOrientation();
 }
 
 checkOrientation();
+camera.zoom = getCameraZoom();
+camera.updateProjectionMatrix();
 
 window.addEventListener('resize', onResize);
 window.addEventListener('orientationchange', onResize);

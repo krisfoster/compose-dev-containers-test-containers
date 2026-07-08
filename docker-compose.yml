@@ -62,7 +62,17 @@ services:
     ports:
       - "${WEB_PORT:-8080}:8080"
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      # When running with --profile public, wait until the ngrok tunnel is
+      # established before starting the app. This prevents the QR code endpoint
+      # from returning 503 on the very first request after a cold start.
+      # Without --profile public the ngrok service does not exist, so this
+      # dependency is conditional — Compose ignores depends_on entries for
+      # services in inactive profiles.
+      ngrok:
+        condition: service_healthy
+        required: false
 
   # ngrok — creates a secure public tunnel so players can reach the game over the
   # internet using a QR code. ngrok is optional: it only starts when you pass
@@ -77,8 +87,34 @@ services:
     profiles:
       - public
     restart: unless-stopped
+    # ngrok.yml defines the endpoint: static domain and upstream URL (app:8081,
+    # the gated port on the Compose network). The authtoken comes from .env so
+    # it stays out of the config file and out of version control.
+    volumes:
+      - ./ngrok.yml:/etc/ngrok/ngrok.yml
+    command: ["start", "--all", "--config=/etc/ngrok/ngrok.yml"]
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-    command: ["http", "app:8081"]
     ports:
       - "4040:4040"
+    # Healthcheck polls ngrok's local inspection API. Once /api/tunnels returns
+    # HTTP 200 the tunnel is established and the app can safely query it for the
+    # public URL used to generate QR codes.
+    # The ngrok image (Debian-based) has bash but not curl/wget. bash's built-in
+    # /dev/tcp lets us make a raw HTTP GET to ngrok's local inspection API and
+    # grep the response for "public_url", confirming the tunnel is established.
+    # CMD form is used so bash is invoked directly rather than via /bin/sh
+    # (which is dash on Debian and does not support /dev/tcp).
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/localhost/4040 &&
+          printf 'GET /api/tunnels HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+          grep -q public_url <&3
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 5s

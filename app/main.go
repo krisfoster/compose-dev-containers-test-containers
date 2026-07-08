@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -25,6 +26,10 @@ import (
 	"crossywhale/app/internal/leaderboard"
 	"crossywhale/app/internal/qrcode"
 )
+
+// startupID is set once when the process starts. The browser polls /api/ping
+// and reloads whenever this value changes, giving instant live-reload on redeploy.
+var startupID = fmt.Sprintf("%d", time.Now().UnixNano())
 
 func main() {
 	cfg := loadConfig()
@@ -138,6 +143,8 @@ func (a *App) ungatedMux() http.Handler {
 	mux.Handle("/", handleRootOrAsset(fileServer))
 	mux.HandleFunc("/play", a.handlePlayIndex)
 	mux.HandleFunc("/qr.png", a.handleQRPNG)
+	mux.HandleFunc("/repo-qr.png", handleRepoQRPNG)
+	mux.HandleFunc("/api/ping", handlePing)
 	mux.HandleFunc("/host", a.handleHost)
 	mux.HandleFunc("/host/rotate", a.handleHostRotate)
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
@@ -158,6 +165,8 @@ func (a *App) gatedMux() http.Handler {
 	fileServer := http.FileServer(http.Dir(a.frontendDir))
 	mux.Handle("/", a.gate.Middleware(fileServer))
 	mux.Handle("/play", a.gate.Middleware(http.HandlerFunc(a.handlePlayIndex)))
+	mux.HandleFunc("/repo-qr.png", handleRepoQRPNG)
+	mux.HandleFunc("/api/ping", handlePing)
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
 	mux.HandleFunc("/leaderboard", handleLeaderboardPage)
 	return mux
@@ -293,7 +302,8 @@ const hostPageHTML = `<!DOCTYPE html>
 <head><title>Crossy Whale - Host</title></head>
 <body>
 <h1>Crossy Whale</h1>
-<img id="qr" src="/qr.png" alt="QR code to join" width="320" height="320">
+<img id="qr" src="/qr.png" alt="QR code to join" width="320" height="320"
+     onerror="this.dataset.err='1'">
 <form id="rotate-form" action="/host/rotate" method="post">
 <button type="submit">Rotate QR</button>
 </form>
@@ -307,6 +317,22 @@ document.getElementById('rotate-form').addEventListener('submit', async (e) => {
     document.getElementById('qr').src = '/qr.png?t=' + Date.now();
   }
 });
+
+// Retry polling: if /qr.png returned an error (ngrok not ready yet at startup),
+// keep attempting every 3 seconds until it loads. Mirrors the same pattern used
+// on the landing page so the host view self-heals without a manual reload.
+(function () {
+  var img = document.getElementById('qr');
+  setInterval(function () {
+    if (!img.dataset.err) return;
+    var next = new Image();
+    next.onload = function () {
+      img.src = next.src;
+      delete img.dataset.err;
+    };
+    next.src = '/qr.png?t=' + Date.now();
+  }, 3000);
+})();
 </script>
 </body>
 </html>
@@ -355,20 +381,59 @@ const leaderboardPageHTML = `<!DOCTYPE html>
 <head>
 <title>Crossy Whale - Leaderboard</title>
 <style>
-  body { font-family: sans-serif; background: #0b1b2b; color: #fff; margin: 0; padding: 2rem; }
-  h1 { text-align: center; }
-  #standings { list-style: none; padding: 0; max-width: 480px; margin: 1.5rem auto 0; }
-  #standings li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.5rem 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.15); }
-  #standings .rank { opacity: 0.6; min-width: 2.5rem; }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: sans-serif; background: #0b1b2b; color: #fff; margin: 0; padding: 2rem 1.5rem; }
+  h1 { text-align: center; margin-top: 0; }
+  /* Outer wrapper: 80% of viewport, centred */
+  .layout { display: flex; flex-direction: row; align-items: flex-start; gap: 2rem; width: 80%; margin: 0 auto; }
+  /* Left column: 60% of layout — QR codes + gif */
+  .left-col { flex: 0 0 60%; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
+  /* Two QR codes side by side, each ~45% of the left column */
+  .qr-row { display: flex; flex-direction: row; gap: 2%; width: 100%; }
+  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; flex: 0 0 45%; min-width: 0; }
+  .qr-wrap img.qr { border-radius: 0.5rem; background: #fff; width: 100%; height: auto; }
+  .qr-wrap h2 { margin: 0 0 0.4rem; font-size: 1rem; text-align: center; }
+  .qr-wrap button { margin-top: 0.25rem; padding: 0.4rem 1rem; border: 1px solid rgba(255,255,255,0.25); border-radius: 0.4rem; background: transparent; color: #fff; cursor: pointer; font-size: 0.85rem; }
+  .qr-wrap button:hover { background: rgba(255,255,255,0.1); }
+  /* Gif at 90% of the left column */
+  .demo-gif { width: 90%; border-radius: 0.5rem; display: block; }
+  /* Right column: 40% of layout — leaderboard */
+  .right-col { flex: 0 0 40%; display: flex; flex-direction: column; }
+  h2 { margin: 0 0 0.75rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
+  #standings { list-style: none; padding: 0; margin: 0; }
+  #standings li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.25rem; }
+  #standings li:first-child { border-top: 1px solid rgba(255,255,255,0.1); }
+  #standings .rank { opacity: 0.5; min-width: 2.5rem; font-size: 1rem; }
   #standings .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #standings .score { font-weight: bold; }
-  #status { text-align: center; opacity: 0.75; }
+  #standings .score { font-weight: bold; font-variant-numeric: tabular-nums; }
+  #status { opacity: 0.65; font-size: 1rem; margin: 0.5rem 0 0; }
+  @media (max-width: 700px) { .layout { flex-direction: column; width: 100%; } .left-col, .right-col { flex: none; width: 100%; } }
 </style>
 </head>
 <body>
-<h1>Crossy Whale Leaderboard</h1>
-<p id="status">Loading standings&hellip;</p>
-<ul id="standings"></ul>
+<h1>🐋 Crossy Whale Leaderboard 🐋</h1>
+<div class="layout">
+  <div class="left-col">
+    <div class="qr-row">
+      <div class="qr-wrap">
+        <h2>Scan to play</h2>
+        <img class="qr" id="qr-img" src="/qr.png" alt="QR code to join"
+             onerror="this.dataset.err='1'" width="280" height="280">
+        <button id="qr-refresh">Refresh QR</button>
+      </div>
+      <div class="qr-wrap">
+        <h2>View the repo</h2>
+        <img class="qr" src="/repo-qr.png" alt="QR code to GitHub repo" width="280" height="280">
+      </div>
+    </div>
+    <img class="demo-gif" src="/container-obstacles.gif" alt="Crossy Whale gameplay">
+  </div>
+  <div class="right-col">
+    <h2>Standings</h2>
+    <ul id="standings"></ul>
+    <p id="status">Loading standings&hellip;</p>
+  </div>
+</div>
 <script>
 (function () {
   var POLL_INTERVAL_MS = 4000;
@@ -419,6 +484,47 @@ const leaderboardPageHTML = `<!DOCTYPE html>
 
   refresh();
   setInterval(refresh, POLL_INTERVAL_MS);
+
+  // QR polling: retry if the image failed to load (ngrok not ready yet).
+  var qrImg = document.getElementById('qr-img');
+  setInterval(function () {
+    if (!qrImg.dataset.err) return;
+    var next = new Image();
+    next.onload = function () {
+      qrImg.src = next.src;
+      delete qrImg.dataset.err;
+    };
+    next.src = '/qr.png?t=' + Date.now();
+  }, 3000);
+
+  // Rotate the QR code — used by both the manual button and the auto-rotate timer.
+  function rotateQR() {
+    fetch('/host/rotate', { method: 'POST' }).then(function (resp) {
+      if (resp.ok) { qrImg.src = '/qr.png?t=' + Date.now(); }
+    });
+  }
+
+  // Manual QR refresh button.
+  document.getElementById('qr-refresh').addEventListener('click', rotateQR);
+
+  // Auto-rotate every 60 seconds so the QR code stays fresh.
+  setInterval(rotateQR, 60000);
+})();
+</script>
+<script>
+// Live-reload: poll /api/ping every 2 s. When the startup ID changes (redeploy),
+// reload the page so the updated version is shown immediately.
+(function () {
+  var knownID = null;
+  setInterval(function () {
+    fetch('/api/ping')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (knownID === null) { knownID = data.id; return; }
+        if (data.id !== knownID) { location.reload(); }
+      })
+      .catch(function () {});
+  }, 2000);
 })();
 </script>
 </body>
@@ -465,6 +571,32 @@ func (a *App) discoverPublicHost(ctx context.Context) (string, error) {
 		}
 	}
 	return "", errNoPublicTunnel
+}
+
+// handlePing returns the process startup ID as JSON. Browsers poll this to
+// detect a redeploy — when the ID changes the page reloads automatically.
+func handlePing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	fmt.Fprintf(w, `{"id":%q}`, startupID)
+}
+
+// repoURL is the public GitHub repository for this project, encoded into the
+// static repo QR code served at /repo-qr.png.
+const repoURL = "https://github.com/krisfoster/compose-dev-containers-test-containers"
+
+// handleRepoQRPNG serves a static QR code that encodes the project's GitHub URL.
+// Unlike /qr.png it requires no active window and no ngrok tunnel — the target
+// URL never changes, so the PNG can be generated fresh on each request cheaply.
+func handleRepoQRPNG(w http.ResponseWriter, r *http.Request) {
+	png, err := qrcode.RenderPNG(repoURL, 320)
+	if err != nil {
+		http.Error(w, "failed to render QR code", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(png)
 }
 
 var errNoPublicTunnel = &noPublicTunnelError{}

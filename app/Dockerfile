@@ -31,4 +31,5 @@ RUN CGO_ENABLED=0 go build -o /out/app .
 FROM dhi.io/static:20260611-alpine3.24
 COPY --from=build /out/app /app
 COPY frontend/game /frontend
+COPY container-obstacles.gif /frontend/container-obstacles.gif
 ENTRYPOINT ["/app"]

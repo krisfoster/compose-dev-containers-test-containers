@@ -22,7 +22,7 @@ const MaxNameLength = 32
 // `limit` query parameter is absent or invalid; maxStandingsLimit is a hard ceiling
 // regardless of what a caller requests.
 const (
-	defaultStandingsLimit = 10
+	defaultStandingsLimit = 20
 	maxStandingsLimit     = 50
 )
 
