@@ -73,6 +73,8 @@ services:
       ngrok:
         condition: service_healthy
         required: false
+    volumes:
+      - ./.git:/repo/.git:ro
 
   # ngrok — creates a secure public tunnel so players can reach the game over the
   # internet using a QR code. ngrok is optional: it only starts when you pass

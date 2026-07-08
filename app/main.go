@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"time"
 
+	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/redis/go-redis/v9"
 
 	"crossywhale/app/internal/gate"
@@ -53,6 +55,7 @@ func main() {
 		httpClient:         &http.Client{Timeout: 3 * time.Second},
 		leaderboardHandler: leaderboardHandler,
 		leaderboardSecret:  cfg.LeaderboardAPISecret,
+		gitRepoPath:        cfg.GitRepoPath,
 	}
 
 	errc := make(chan error, 2)
@@ -78,6 +81,7 @@ type Config struct {
 	NgrokAPIURL          string
 	FrontendDir          string
 	LeaderboardAPISecret string
+	GitRepoPath          string
 }
 
 func loadConfig() Config {
@@ -95,6 +99,7 @@ func loadConfig() Config {
 		NgrokAPIURL:          envOr("NGROK_API_URL", "http://ngrok:4040/api/tunnels"),
 		FrontendDir:          envOr("FRONTEND_DIR", "/frontend"),
 		LeaderboardAPISecret: envOr("LEADERBOARD_API_SECRET", "dev-only-change-me"),
+		GitRepoPath:          envOr("GIT_REPO_PATH", "/repo"),
 	}
 }
 
@@ -127,6 +132,7 @@ type App struct {
 	httpClient         *http.Client
 	leaderboardHandler http.Handler
 	leaderboardSecret  string
+	gitRepoPath        string
 }
 
 // ungatedMux serves the game with no access check at all (FR-004), plus the
@@ -149,6 +155,7 @@ func (a *App) ungatedMux() http.Handler {
 	mux.HandleFunc("/host/rotate", a.handleHostRotate)
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
 	mux.HandleFunc("/leaderboard", handleLeaderboardPage)
+	mux.HandleFunc("/api/commits", a.handleCommits)
 	return mux
 }
 
@@ -169,6 +176,7 @@ func (a *App) gatedMux() http.Handler {
 	mux.HandleFunc("/api/ping", handlePing)
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
 	mux.HandleFunc("/leaderboard", handleLeaderboardPage)
+	mux.HandleFunc("/api/commits", a.handleCommits)
 	return mux
 }
 
@@ -386,8 +394,8 @@ const leaderboardPageHTML = `<!DOCTYPE html>
   h1 { text-align: center; margin-top: 0; }
   /* Outer wrapper: 80% of viewport, centred */
   .layout { display: flex; flex-direction: row; align-items: flex-start; gap: 2rem; width: 80%; margin: 0 auto; }
-  /* Left column: 60% of layout — QR codes + gif */
-  .left-col { flex: 0 0 60%; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
+  /* Left column: 48% of layout — QR codes + gif */
+  .left-col { flex: 0 0 48%; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
   /* Two QR codes side by side, each ~45% of the left column */
   .qr-row { display: flex; flex-direction: row; gap: 2%; width: 100%; }
   .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; flex: 0 0 45%; min-width: 0; }
@@ -397,8 +405,8 @@ const leaderboardPageHTML = `<!DOCTYPE html>
   .qr-wrap button:hover { background: rgba(255,255,255,0.1); }
   /* Gif at 90% of the left column */
   .demo-gif { width: 90%; border-radius: 0.5rem; display: block; }
-  /* Right column: 40% of layout — leaderboard */
-  .right-col { flex: 0 0 40%; display: flex; flex-direction: column; }
+  /* Middle column: 32% of layout — leaderboard standings */
+  .right-col { flex: 0 0 32%; display: flex; flex-direction: column; }
   h2 { margin: 0 0 0.75rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
   #standings { list-style: none; padding: 0; margin: 0; }
   #standings li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.25rem; }
@@ -407,7 +415,16 @@ const leaderboardPageHTML = `<!DOCTYPE html>
   #standings .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #standings .score { font-weight: bold; font-variant-numeric: tabular-nums; }
   #status { opacity: 0.65; font-size: 1rem; margin: 0.5rem 0 0; }
-  @media (max-width: 700px) { .layout { flex-direction: column; width: 100%; } .left-col, .right-col { flex: none; width: 100%; } }
+  /* Right column: 20% of layout — recent commits */
+  .commit-col { flex: 0 0 20%; display: flex; flex-direction: column; min-width: 0; }
+  .commit-col h2 { margin: 0 0 0.75rem; }
+  #commits { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  #commits li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
+  #commits .chash { font-family: monospace; font-weight: bold; opacity: 0.9; }
+  #commits .cdate { opacity: 0.55; display: block; margin-top: 0.15rem; }
+  #commits .cmsg { display: block; margin-top: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #commit-status { opacity: 0.55; font-size: 0.8rem; margin: 0.25rem 0 0; }
+  @media (max-width: 900px) { .layout { flex-direction: column; width: 100%; } .left-col, .right-col, .commit-col { flex: none; width: 100%; } }
 </style>
 </head>
 <body>
@@ -432,6 +449,11 @@ const leaderboardPageHTML = `<!DOCTYPE html>
     <h2>Standings</h2>
     <ul id="standings"></ul>
     <p id="status">Loading standings&hellip;</p>
+  </div>
+  <div class="commit-col">
+    <h2>Recent commits</h2>
+    <ul id="commits"></ul>
+    <p id="commit-status">Loading&hellip;</p>
   </div>
 </div>
 <script>
@@ -473,9 +495,6 @@ const leaderboardPageHTML = `<!DOCTYPE html>
         hasRenderedOnce = true;
       })
       .catch(function () {
-        // FR-007: on failure, leave whatever is already rendered alone and retry on
-        // the next interval tick. Only the very first load has nothing to fall back
-        // to, so the loading message simply stays up until a later poll succeeds.
         if (!hasRenderedOnce) {
           statusEl.textContent = 'Loading standings…';
         }
@@ -509,6 +528,43 @@ const leaderboardPageHTML = `<!DOCTYPE html>
 
   // Auto-rotate every 60 seconds so the QR code stays fresh.
   setInterval(rotateQR, 60000);
+
+  // Commit feed: poll /api/commits every 30 s.
+  var commitListEl = document.getElementById('commits');
+  var commitStatusEl = document.getElementById('commit-status');
+
+  function renderCommits(commits) {
+    if (!commits || commits.length === 0) {
+      commitStatusEl.textContent = 'No commits found.';
+      commitStatusEl.style.display = '';
+      commitListEl.innerHTML = '';
+      return;
+    }
+    commitStatusEl.style.display = 'none';
+    commitListEl.innerHTML = commits.map(function (c) {
+      return '<li>' +
+        '<span class="chash">' + escapeText(c.hash) + '</span>' +
+        '<span class="cdate">' + escapeText(c.date) + '</span>' +
+        '<span class="cmsg">' + escapeText(c.message) + '</span>' +
+        '</li>';
+    }).join('');
+  }
+
+  function refreshCommits() {
+    fetch('/api/commits')
+      .then(function (resp) {
+        if (!resp.ok) { throw new Error('commits fetch failed: ' + resp.status); }
+        return resp.json();
+      })
+      .then(renderCommits)
+      .catch(function () {
+        commitStatusEl.textContent = 'Commits unavailable.';
+        commitStatusEl.style.display = '';
+      });
+  }
+
+  refreshCommits();
+  setInterval(refreshCommits, 30000);
 })();
 </script>
 <script>
@@ -597,6 +653,61 @@ func handleRepoQRPNG(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(png)
+}
+
+// commitEntry is the JSON shape returned by /api/commits.
+type commitEntry struct {
+	Hash    string `json:"hash"`
+	Date    string `json:"date"`
+	Message string `json:"message"`
+}
+
+// handleCommits reads up to 20 recent commits from the git repo at a.gitRepoPath
+// and returns them as JSON, newest first.
+func (a *App) handleCommits(w http.ResponseWriter, r *http.Request) {
+	repo, err := gogit.PlainOpen(a.gitRepoPath)
+	if err != nil {
+		http.Error(w, "git repo unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ref, err := repo.Head()
+	if err != nil {
+		http.Error(w, "git repo has no HEAD", http.StatusServiceUnavailable)
+		return
+	}
+	iter, err := repo.Log(&gogit.LogOptions{From: ref.Hash()})
+	if err != nil {
+		http.Error(w, "failed to read git log", http.StatusInternalServerError)
+		return
+	}
+	defer iter.Close()
+
+	const limit = 20
+	entries := make([]commitEntry, 0, limit)
+	_ = iter.ForEach(func(c *object.Commit) error {
+		if len(entries) >= limit {
+			return fmt.Errorf("done")
+		}
+		msg := c.Message
+		if nl := len(msg); nl > 0 {
+			if idx := 0; idx < nl {
+				for idx < nl && msg[idx] != '\n' {
+					idx++
+				}
+				msg = msg[:idx]
+			}
+		}
+		entries = append(entries, commitEntry{
+			Hash:    c.Hash.String()[:7],
+			Date:    c.Author.When.UTC().Format("2006-01-02 15:04"),
+			Message: msg,
+		})
+		return nil
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(entries)
 }
 
 var errNoPublicTunnel = &noPublicTunnelError{}

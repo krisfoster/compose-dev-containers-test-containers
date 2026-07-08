@@ -25,11 +25,15 @@ COPY app/go.mod app/go.sum ./
 RUN go mod download
 COPY app/ .
 RUN CGO_ENABLED=0 go build -o /out/app .
+# Create an empty /repo directory so the final image has a mount point for
+# the host .git directory. dhi.io/static has no shell, so we make it here.
+RUN mkdir /out/repo
 
 # The final image contains only the compiled binary and the frontend assets.
 # No Go toolchain, no source code, no build cache — just what the app needs to run.
 FROM dhi.io/static:20260611-alpine3.24
 COPY --from=build /out/app /app
+COPY --from=build /out/repo /repo
 COPY frontend/game /frontend
 COPY container-obstacles.gif /frontend/container-obstacles.gif
 ENTRYPOINT ["/app"]
