@@ -18,12 +18,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"crossywhale/app/internal/gate"
-	"crossywhale/app/internal/leaderboard"
 	"crossywhale/app/internal/qrcode"
 )
 
@@ -41,31 +42,35 @@ func main() {
 	signer := gate.NewSigner([]byte(cfg.GrantCookieSecret), cfg.GrantLifetime)
 	g := gate.NewGate(store, signer)
 
-	scoreStore := leaderboard.NewRedisScoreStore(redisClient)
-	leaderboardHandler := leaderboard.NewHandler(scoreStore, cfg.LeaderboardAPISecret, scoreStore)
-
 	app := &App{
 		store:                store,
 		gate:                 g,
+		signer:               signer,
 		frontendDir:          cfg.FrontendDir,
+		templatesDir:         cfg.TemplatesDir,
 		ngrokAPIURL:          cfg.NgrokAPIURL,
 		qrWindowTTL:          cfg.QRWindowTTL,
 		httpClient:           &http.Client{Timeout: 3 * time.Second},
-		leaderboardHandler:   leaderboardHandler,
-		leaderboardSecret:    cfg.LeaderboardAPISecret,
 		leaderboardAssetsDir: cfg.LeaderboardAssetsDir,
 		commitsServiceURL:    cfg.CommitsServiceURL,
 		scoresServiceURL:     cfg.ScoresServiceURL,
 	}
 
-	errc := make(chan error, 2)
+	// Fail fast if any page template is missing — better to surface this at
+	// startup than to silently serve 500s on the first request to each page.
+	for _, name := range []string{"getting-started.html", "host.html", "leaderboard.html"} {
+		p := filepath.Join(cfg.TemplatesDir, name)
+		if _, err := os.Stat(p); err != nil {
+			log.Fatalf("template file missing: %s: %v", p, err)
+		}
+	}
+
+	go app.watchTemplates(context.Background())
+
+	errc := make(chan error, 1)
 	go func() {
 		log.Printf("ungated listener starting on :%s", cfg.WebPort)
 		errc <- http.ListenAndServe(":"+cfg.WebPort, app.ungatedMux())
-	}()
-	go func() {
-		log.Printf("gated listener starting on :%s", cfg.GatedPort)
-		errc <- http.ListenAndServe(":"+cfg.GatedPort, app.gatedMux())
 	}()
 	log.Fatal(<-errc)
 }
@@ -73,14 +78,13 @@ func main() {
 // Config holds the environment-driven settings for the app service.
 type Config struct {
 	WebPort              string
-	GatedPort            string
 	RedisAddr            string
 	GrantCookieSecret    string
 	QRWindowTTL          time.Duration
 	GrantLifetime        time.Duration
 	NgrokAPIURL          string
 	FrontendDir          string
-	LeaderboardAPISecret string
+	TemplatesDir         string
 	LeaderboardAssetsDir string
 	CommitsServiceURL    string
 	ScoresServiceURL     string
@@ -88,8 +92,7 @@ type Config struct {
 
 func loadConfig() Config {
 	return Config{
-		WebPort:   envOr("APP_WEB_PORT", "8080"),
-		GatedPort: envOr("APP_GATED_PORT", "8081"),
+		WebPort: envOr("APP_WEB_PORT", "8080"),
 		// REDIS_ADDR default is "redis:6379" — "redis" is the service name defined in
 		// docker-compose.yml. Docker Compose automatically provides DNS for every
 		// service, so containers in the same Compose network resolve service names to
@@ -100,7 +103,10 @@ func loadConfig() Config {
 		GrantLifetime:        envDurationOr("GRANT_LIFETIME", 4*time.Hour),
 		NgrokAPIURL:          envOr("NGROK_API_URL", "http://ngrok:4040/api/tunnels"),
 		FrontendDir:          envOr("FRONTEND_DIR", "/frontend"),
-		LeaderboardAPISecret: envOr("LEADERBOARD_API_SECRET", "dev-only-change-me"),
+		// TEMPLATES_DIR is the container-side path to the page template .html files.
+		// In the compose stack it is bind-mounted from ./templates so edits on the
+		// host reach the running container immediately for live-reload (015-extract-html-templates).
+		TemplatesDir:         envOr("TEMPLATES_DIR", "/templates"),
 		LeaderboardAssetsDir: envOr("LEADERBOARD_ASSETS_DIR", "/leaderboard-assets"),
 		// CommitsServiceURL is the base URL of the commits microservice, reachable
 		// from the browser. Default is localhost:8082 for local dev; override via
@@ -136,59 +142,92 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 type App struct {
 	store                gate.WindowStore
 	gate                 *gate.Gate
+	signer               *gate.Signer
 	frontendDir          string
+	templatesDir         string
 	ngrokAPIURL          string
 	qrWindowTTL          time.Duration
 	httpClient           *http.Client
-	leaderboardHandler   http.Handler
-	leaderboardSecret    string
 	leaderboardAssetsDir string
 	commitsServiceURL    string
 	scoresServiceURL     string
+	// templateVersion is atomically incremented by watchTemplates whenever any
+	// page template file on disk changes. handlePing incorporates it into the
+	// response id so the browser auto-reloads within its next poll cycle.
+	templateVersion atomic.Int64
+}
+
+// watchTemplates polls the mtime of each page template file every second. When
+// any file's modification time advances, templateVersion is incremented so the
+// next /api/ping response carries a new id and all open browsers reload.
+func (a *App) watchTemplates(ctx context.Context) {
+	files := []string{
+		filepath.Join(a.templatesDir, "getting-started.html"),
+		filepath.Join(a.templatesDir, "host.html"),
+		filepath.Join(a.templatesDir, "leaderboard.html"),
+	}
+	baselines := make(map[string]time.Time, len(files))
+	for _, f := range files {
+		if info, err := os.Stat(f); err == nil {
+			baselines[f] = info.ModTime()
+		}
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, f := range files {
+				info, err := os.Stat(f)
+				if err != nil {
+					log.Printf("watchTemplates: stat %s: %v", f, err)
+					continue
+				}
+				if info.ModTime().After(baselines[f]) {
+					baselines[f] = info.ModTime()
+					ver := a.templateVersion.Add(1)
+					log.Printf("watchTemplates: %s changed (template version now %d)", f, ver)
+				}
+			}
+		}
+	}
 }
 
 // ungatedMux serves the game with no access check at all (FR-004), plus the
 // presenter-only routes for displaying and rotating the QR code (FR-002, FR-007).
 // The bare "/" serves a getting-started landing page rather than the raw game
-// index.html — playing straight from "/" used to silently break score submission
-// (it bypassed handlePlayIndex's credential injection, so
-// window.__LEADERBOARD_TOKEN__ was left as the unrendered template placeholder and
-// every submission was rejected with no visible error). Routing players through the
-// landing page's explicit "/play" link avoids that trap entirely.
+// index.html — routing players through the explicit "/play" link ensures the
+// gate.Middleware cookie check runs before the game loads.
 func (a *App) ungatedMux() http.Handler {
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.Dir(a.frontendDir))
-	mux.Handle("/", handleRootOrAsset(fileServer))
-	mux.HandleFunc("/play", a.handlePlayIndex)
+	mux.Handle("/", a.handleRootOrAsset(fileServer))
+	mux.Handle("/play", a.gate.Middleware(http.HandlerFunc(a.handlePlayIndex)))
+	mux.HandleFunc("/play-local", func(w http.ResponseWriter, r *http.Request) {
+		token, err := a.signer.Sign(gate.NewGrant("local"))
+		if err != nil {
+			http.Error(w, "failed to generate local grant", http.StatusInternalServerError)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     gate.GrantCookieName,
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+		a.handlePlayIndex(w, r)
+	})
 	mux.HandleFunc("/qr.png", a.handleQRPNG)
 	mux.HandleFunc("/repo-qr.png", handleRepoQRPNG)
-	mux.HandleFunc("/api/ping", handlePing)
+	mux.HandleFunc("/api/ping", a.handlePing)
 	mux.HandleFunc("/host", a.handleHost)
 	mux.HandleFunc("/host/rotate", a.handleHostRotate)
-	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
 	mux.HandleFunc("/leaderboard", a.handleLeaderboardPage)
 	mux.Handle("/leaderboard-assets/", http.StripPrefix("/leaderboard-assets/", http.FileServer(http.Dir(a.leaderboardAssetsDir))))
-	return mux
-}
-
-// gatedMux serves only the game itself, behind the gate decision (FR-003, FR-009).
-// /qr.png, /host, and /host/rotate are intentionally absent here — a request for
-// them gets the same 404 any undefined route would, per the gate HTTP contract.
-// /api/leaderboard/scores and /leaderboard are deliberately NOT wrapped in the gate
-// middleware — the former has its own independent credential check on writes and no
-// check at all on reads (see internal/leaderboard); the latter has no gating
-// requirement of its own (specs/004-leaderboard-page/spec.md FR-011, FR-013). Neither
-// is tied to QR visitor access (specs/003-leaderboard-score-submission/research.md §2).
-func (a *App) gatedMux() http.Handler {
-	mux := http.NewServeMux()
-	fileServer := http.FileServer(http.Dir(a.frontendDir))
-	mux.Handle("/", a.gate.Middleware(fileServer))
-	mux.Handle("/play", a.gate.Middleware(http.HandlerFunc(a.handlePlayIndex)))
-	mux.HandleFunc("/repo-qr.png", handleRepoQRPNG)
-	mux.HandleFunc("/api/ping", handlePing)
-	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
-	mux.HandleFunc("/leaderboard", a.handleLeaderboardPage)
-	mux.Handle("/leaderboard-assets/", http.StripPrefix("/leaderboard-assets/", http.FileServer(http.Dir(a.leaderboardAssetsDir))))
+	mux.HandleFunc("/auth/check", a.handleAuthCheck)
 	return mux
 }
 
@@ -206,8 +245,7 @@ func (a *App) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	data := struct{ LeaderboardToken string }{LeaderboardToken: a.leaderboardSecret}
-	if err := tmpl.Execute(w, data); err != nil {
+	if err := tmpl.Execute(w, nil); err != nil {
 		log.Printf("render index.html: %v", err)
 	}
 }
@@ -242,121 +280,29 @@ func (a *App) handleQRPNG(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(png)
 }
 
-// gettingStartedPageHTML is served at the bare "/" on the ungated listener — a small
-// landing page linking to the three local presenter destinations, so nobody lands on
-// (or accidentally plays through) the raw, un-rendered game file directly.
-const gettingStartedPageHTML = `<!DOCTYPE html>
-<html>
-<head>
-<title>Crossy Whale</title>
-<style>
-  body { font-family: sans-serif; margin: 0; padding: 2rem 1rem; }
-  h1 { margin-top: 0; }
-  a.button { display: block; text-align: center; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0.5rem; text-decoration: none; font-weight: bold; color: #fff; }
-  a.play { background: #1f6feb; }
-  a.host { background: #6e7681; }
-  a.leaderboard { background: #2ea043; }
-  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start; max-width: 800px; margin: 0 auto; }
-  .qr-col { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
-  .qr-col img { border-radius: 0.5rem; background: #fff; max-width: 100%; height: auto; }
-  .qr-col p { margin: 0; font-size: 0.85rem; color: #6e7681; }
-  @media (max-width: 600px) { .layout { grid-template-columns: 1fr; } }
-</style>
-</head>
-<body>
-<h1>Crossy Whale</h1>
-<div class="layout">
-  <div class="nav-col">
-    <a class="button play" href="/play">Play the game</a>
-    <a class="button host" href="/host">Host: show the QR code</a>
-    <a class="button leaderboard" href="/leaderboard">View the leaderboard</a>
-  </div>
-  <div class="qr-col" id="qr-col">
-    <img id="qr-img" src="/qr.png" alt="QR code to join" width="280" height="280"
-         style="display:none"
-         onload="this.style.display='';document.getElementById('qr-hint').style.display='none';document.getElementById('qr-caption').style.display=''">
-    <p id="qr-hint" style="color:#aaa;font-size:0.85rem;text-align:center;max-width:220px;margin:0">
-      Visit <a href="/host">/host</a> to activate the QR code
-    </p>
-    <p id="qr-caption" style="display:none">Scan to play on your phone</p>
-  </div>
-</div>
-<script>
-(function () {
-  var img = document.getElementById('qr-img');
-  setInterval(function () {
-    var next = new Image();
-    next.onload = function () {
-      img.src = next.src;
-      img.style.display = '';
-      var hint = document.getElementById('qr-hint');
-      if (hint) hint.style.display = 'none';
-      var caption = document.getElementById('qr-caption');
-      if (caption) caption.style.display = '';
-    };
-    next.src = '/qr.png?t=' + Date.now();
-  }, 4000);
-})();
-</script>
-</body>
-</html>
-`
-
-// handleRootOrAsset serves gettingStartedPageHTML for an exact "/" request and
+// handleRootOrAsset serves the getting-started page for an exact "/" request and
 // delegates everything else (script.js, style.css, model assets, ...) to assets — the
 // same catch-all fileServer /play's rendered page depends on for its own
 // root-relative asset references.
-func handleRootOrAsset(assets http.Handler) http.HandlerFunc {
+func (a *App) handleRootOrAsset(assets http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			assets.ServeHTTP(w, r)
 			return
 		}
+		p := filepath.Join(a.templatesDir, "getting-started.html")
+		tmpl, err := template.ParseFiles(p)
+		if err != nil {
+			log.Printf("template parse error %s: %v", p, err)
+			http.Error(w, "failed to load page", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(gettingStartedPageHTML))
+		if err := tmpl.Execute(w, nil); err != nil {
+			log.Printf("template execute error %s: %v", p, err)
+		}
 	}
 }
-
-const hostPageHTML = `<!DOCTYPE html>
-<html>
-<head><title>Crossy Whale - Host</title></head>
-<body>
-<h1>Crossy Whale</h1>
-<img id="qr" src="/qr.png" alt="QR code to join" width="320" height="320"
-     onerror="this.dataset.err='1'">
-<form id="rotate-form" action="/host/rotate" method="post">
-<button type="submit">Rotate QR</button>
-</form>
-<script>
-// Progressive enhancement: with JS, rotating swaps the QR image in place with no
-// page reload. Without JS, the form still works via its normal POST + redirect.
-document.getElementById('rotate-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const resp = await fetch('/host/rotate', { method: 'POST' });
-  if (resp.ok) {
-    document.getElementById('qr').src = '/qr.png?t=' + Date.now();
-  }
-});
-
-// Retry polling: if /qr.png returned an error (ngrok not ready yet at startup),
-// keep attempting every 3 seconds until it loads. Mirrors the same pattern used
-// on the landing page so the host view self-heals without a manual reload.
-(function () {
-  var img = document.getElementById('qr');
-  setInterval(function () {
-    if (!img.dataset.err) return;
-    var next = new Image();
-    next.onload = function () {
-      img.src = next.src;
-      delete img.dataset.err;
-    };
-    next.src = '/qr.png?t=' + Date.now();
-  }, 3000);
-})();
-</script>
-</body>
-</html>
-`
 
 // handleHost renders the presenter-facing page embedding the QR code, auto-activating
 // the first window on first visit if none is active yet (FR-002).
@@ -372,8 +318,17 @@ func (a *App) handleHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	p := filepath.Join(a.templatesDir, "host.html")
+	tmpl, err := template.ParseFiles(p)
+	if err != nil {
+		log.Printf("template parse error %s: %v", p, err)
+		http.Error(w, "failed to load page", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(hostPageHTML))
+	if err := tmpl.Execute(w, nil); err != nil {
+		log.Printf("template execute error %s: %v", p, err)
+	}
 }
 
 // handleHostRotate invalidates the current QR code and issues a fresh one (FR-007).
@@ -389,155 +344,14 @@ func (a *App) handleHostRotate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/host", http.StatusSeeOther)
 }
 
-// leaderboardPageTemplate is the leaderboard display page, meant for an unattended
-// wall/booth display. The standings column is rendered by a React component
-// (013-leaderboard-scores-microservice) that subscribes to the scores-service SSE
-// stream. The commit feed column is rendered by a React component
-// (012-git-commits-microservice) that subscribes to the commits-service SSE stream.
-// {{.ScoresServiceURL}} and {{.CommitsServiceURL}} are injected at render time so the
-// URLs are configurable across demo environments.
-const leaderboardPageTemplate = `<!DOCTYPE html>
-<html>
-<head>
-<title>Crossy Whale - Leaderboard</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; }
-  body { font-family: sans-serif; background: #0b1b2b; color: #fff; margin: 0; padding: 2rem 1.5rem; }
-  h1 { text-align: center; margin-top: 0; }
-  /* Outer wrapper: 80% of viewport, centred */
-  .layout { display: flex; flex-direction: row; align-items: flex-start; gap: 2rem; width: 80%; margin: 0 auto; }
-  /* Left column: 48% of layout — QR codes + gif */
-  .left-col { flex: 0 0 48%; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
-  /* Two QR codes side by side, each ~45% of the left column */
-  .qr-row { display: flex; flex-direction: row; gap: 2%; width: 100%; }
-  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; flex: 0 0 45%; min-width: 0; }
-  .qr-wrap img.qr { border-radius: 0.5rem; background: #fff; width: 100%; height: auto; }
-  .qr-wrap h2 { margin: 0 0 0.4rem; font-size: 1rem; text-align: center; }
-  .qr-wrap button { margin-top: 0.25rem; padding: 0.4rem 1rem; border: 1px solid rgba(255,255,255,0.25); border-radius: 0.4rem; background: transparent; color: #fff; cursor: pointer; font-size: 0.85rem; }
-  .qr-wrap button:hover { background: rgba(255,255,255,0.1); }
-  /* Gif at 90% of the left column */
-  .demo-gif { width: 90%; border-radius: 0.5rem; display: block; }
-  /* Middle column: 32% of layout — leaderboard standings */
-  .right-col { flex: 0 0 32%; display: flex; flex-direction: column; }
-  h2 { margin: 0 0 0.75rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
-  #scores-root ul { list-style: none; padding: 0; margin: 0; }
-  #scores-root li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.25rem; }
-  #scores-root li:first-child { border-top: 1px solid rgba(255,255,255,0.1); }
-  #scores-root .rank { opacity: 0.5; min-width: 2.5rem; font-size: 1rem; }
-  #scores-root .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #scores-root .score { font-weight: bold; font-variant-numeric: tabular-nums; }
-  #scores-root p { opacity: 0.65; font-size: 1rem; margin: 0.5rem 0 0; }
-  /* Right column: 20% of layout — recent commits */
-  .commit-col { flex: 0 0 20%; display: flex; flex-direction: column; min-width: 0; }
-  .commit-col h2 { margin: 0 0 0.75rem; }
-  #commits { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-  #commits li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
-  #commits-root ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-  #commits-root li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
-  #commits-root .chash { font-family: monospace; font-weight: bold; opacity: 0.9; display: block; }
-  #commits-root .cauthor { opacity: 0.7; font-size: 0.68rem; display: block; margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #commits-root .cdate { opacity: 0.55; display: block; margin-top: 0.15rem; }
-  #commits-root .cmsg { display: block; margin-top: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #commits-root p { opacity: 0.55; font-size: 0.8rem; margin: 0.25rem 0 0; }
-  @media (max-width: 900px) { .layout { flex-direction: column; width: 100%; } .left-col, .right-col, .commit-col { flex: none; width: 100%; } }
-</style>
-</head>
-<body>
-<h1>🐋 Crossy Whale Leaderboard 🐋</h1>
-<div class="layout">
-  <div class="left-col">
-    <div class="qr-row">
-      <div class="qr-wrap">
-        <h2>Scan to play</h2>
-        <img class="qr" id="qr-img" src="/qr.png" alt="QR code to join"
-             onerror="this.dataset.err='1'" width="280" height="280">
-        <button id="qr-refresh">Refresh QR</button>
-      </div>
-      <div class="qr-wrap">
-        <h2>View the repo</h2>
-        <img class="qr" src="/repo-qr.png" alt="QR code to GitHub repo" width="280" height="280">
-      </div>
-    </div>
-    <img class="demo-gif" src="/container-obstacles.gif" alt="Crossy Whale gameplay">
-  </div>
-  <div class="right-col">
-    <h2>Standings</h2>
-    <div id="scores-root"></div>
-  </div>
-  <div class="commit-col">
-    <h2>Recent commits</h2>
-    <div id="commits-root"></div>
-  </div>
-</div>
-<script>
-(function () {
-  // QR polling: retry if the image failed to load (ngrok not ready yet).
-  var qrImg = document.getElementById('qr-img');
-  setInterval(function () {
-    if (!qrImg.dataset.err) return;
-    var next = new Image();
-    next.onload = function () {
-      qrImg.src = next.src;
-      delete qrImg.dataset.err;
-    };
-    next.src = '/qr.png?t=' + Date.now();
-  }, 3000);
-
-  // Rotate the QR code — used by both the manual button and the auto-rotate timer.
-  function rotateQR() {
-    fetch('/host/rotate', { method: 'POST' }).then(function (resp) {
-      if (resp.ok) { qrImg.src = '/qr.png?t=' + Date.now(); }
-    });
-  }
-
-  // Manual QR refresh button.
-  document.getElementById('qr-refresh').addEventListener('click', rotateQR);
-
-  // Auto-rotate every 60 seconds so the QR code stays fresh.
-  setInterval(rotateQR, 60000);
-})();
-</script>
-<script>
-// Live-reload: poll /api/ping every 2 s. When the startup ID changes (redeploy),
-// reload the page so the updated version is shown immediately.
-(function () {
-  var knownID = null;
-  setInterval(function () {
-    fetch('/api/ping')
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (knownID === null) { knownID = data.id; return; }
-        if (data.id !== knownID) { location.reload(); }
-      })
-      .catch(function () {});
-  }, 2000);
-})();
-</script>
-<!-- React components: scores feed (013-leaderboard-scores-microservice) and
-     commit feed (012-git-commits-microservice).
-     Bundles are vendored under frontend/leaderboard/ (see ATTRIBUTION.md). -->
-<script src="/leaderboard-assets/react.production.min.js"></script>
-<script src="/leaderboard-assets/react-dom.production.min.js"></script>
-<script type="module">
-import { ScoresComponent } from '/leaderboard-assets/scores-component.js';
-const scoresRoot = ReactDOM.createRoot(document.getElementById('scores-root'));
-scoresRoot.render(React.createElement(ScoresComponent, { scoresServiceURL: '{{.ScoresServiceURL}}' }));
-</script>
-<script type="module">
-import { CommitsComponent } from '/leaderboard-assets/commits-component.js';
-const root = ReactDOM.createRoot(document.getElementById('commits-root'));
-root.render(React.createElement(CommitsComponent, { commitsServiceURL: '{{.CommitsServiceURL}}' }));
-</script>
-</body>
-</html>
-`
-
 // handleLeaderboardPage serves the leaderboard display page, rendering the
-// leaderboardPageTemplate with the configured service URLs so the React
+// leaderboard template with the configured service URLs so the React
 // components connect to the correct microservice endpoints.
 func (a *App) handleLeaderboardPage(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.New("leaderboard").Parse(leaderboardPageTemplate)
+	p := filepath.Join(a.templatesDir, "leaderboard.html")
+	tmpl, err := template.ParseFiles(p)
 	if err != nil {
+		log.Printf("template parse error %s: %v", p, err)
 		http.Error(w, "failed to render leaderboard", http.StatusInternalServerError)
 		return
 	}
@@ -550,8 +364,59 @@ func (a *App) handleLeaderboardPage(w http.ResponseWriter, r *http.Request) {
 		ScoresServiceURL:  a.scoresServiceURL,
 	}
 	if err := tmpl.Execute(w, data); err != nil {
-		log.Printf("render leaderboard: %v", err)
+		log.Printf("template execute error %s: %v", p, err)
 	}
+}
+
+// handlePing returns the process startup ID combined with the current template
+// version as JSON. Browsers poll this to detect a redeploy (startupID changes)
+// or a template file edit (templateVersion increments) — either causes a reload.
+func (a *App) handlePing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	id := startupID + "." + strconv.FormatInt(a.templateVersion.Load(), 10)
+	fmt.Fprintf(w, `{"id":%q}`, id)
+}
+
+// repoURL is the public GitHub repository for this project, encoded into the
+// static repo QR code served at /repo-qr.png.
+const repoURL = "https://github.com/krisfoster/compose-dev-containers-test-containers"
+
+// handleAuthCheck is an internal-only endpoint called by nginx auth_request to validate
+// the cw_grant cookie before forwarding requests to protected upstream routes. It returns
+// 200 if the cookie is present and cryptographically valid, 401 otherwise. The nginx
+// config marks the corresponding location as "internal" so external clients cannot call
+// this endpoint directly.
+func (a *App) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	cookie, err := r.Cookie(gate.GrantCookieName)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if _, err := a.signer.Verify(cookie.Value); err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleRepoQRPNG serves a static QR code that encodes the project's GitHub URL.
+// Unlike /qr.png it requires no active window and no ngrok tunnel — the target
+// URL never changes, so the PNG can be generated fresh on each request cheaply.
+func handleRepoQRPNG(w http.ResponseWriter, r *http.Request) {
+	png, err := qrcode.RenderPNG(repoURL, 320)
+	if err != nil {
+		http.Error(w, "failed to render QR code", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(png)
 }
 
 // ngrokTunnelsResponse is the shape of ngrok's local inspection API
@@ -586,32 +451,6 @@ func (a *App) discoverPublicHost(ctx context.Context) (string, error) {
 		}
 	}
 	return "", errNoPublicTunnel
-}
-
-// handlePing returns the process startup ID as JSON. Browsers poll this to
-// detect a redeploy — when the ID changes the page reloads automatically.
-func handlePing(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	fmt.Fprintf(w, `{"id":%q}`, startupID)
-}
-
-// repoURL is the public GitHub repository for this project, encoded into the
-// static repo QR code served at /repo-qr.png.
-const repoURL = "https://github.com/krisfoster/compose-dev-containers-test-containers"
-
-// handleRepoQRPNG serves a static QR code that encodes the project's GitHub URL.
-// Unlike /qr.png it requires no active window and no ngrok tunnel — the target
-// URL never changes, so the PNG can be generated fresh on each request cheaply.
-func handleRepoQRPNG(w http.ResponseWriter, r *http.Request) {
-	png, err := qrcode.RenderPNG(repoURL, 320)
-	if err != nil {
-		http.Error(w, "failed to render QR code", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	_, _ = w.Write(png)
 }
 
 var errNoPublicTunnel = &noPublicTunnelError{}

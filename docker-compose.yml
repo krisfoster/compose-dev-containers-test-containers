@@ -52,11 +52,9 @@ services:
       - REDIS_ADDR=redis:6379
       - GRANT_COOKIE_SECRET=${GRANT_COOKIE_SECRET:-dev-only-change-me}
       - QR_WINDOW_TTL=${QR_WINDOW_TTL:-15m}
-      - LEADERBOARD_API_SECRET=${LEADERBOARD_API_SECRET:-dev-only-change-me}
       - NGROK_API_URL=http://ngrok:4040/api/tunnels
       - FRONTEND_DIR=/frontend
       - APP_WEB_PORT=8080
-      - APP_GATED_PORT=8081
       - LEADERBOARD_ASSETS_DIR=/leaderboard-assets
       # COMMITS_SERVICE_URL is the browser-visible base URL of the commits microservice.
       # With nginx as the single ingress (014-nginx-front-door), the browser connects
@@ -68,11 +66,18 @@ services:
       # to http://localhost (port 80) and nginx proxies /scores/* to scores-service.
       # Override in .env for demo environments (e.g. SCORES_SERVICE_URL=https://demo.ngrok.app).
       - SCORES_SERVICE_URL=${SCORES_SERVICE_URL:-http://localhost}
+      # TEMPLATES_DIR is the container-side path to the page template .html files.
+      # The bind mount below makes host edits visible inside the container immediately,
+      # enabling live reload (015-extract-html-templates). In production the templates
+      # are baked into the image via COPY in app/Dockerfile.
+      - TEMPLATES_DIR=/templates
     # ports: publishes container port 8080 to the host for direct developer access
     # (e.g. debugging without nginx in the path). The primary public entry point is
     # nginx on port 80. WEB_PORT can be overridden via .env.
     ports:
       - "${WEB_PORT:-8080}:8080"
+    volumes:
+      - ./templates:/templates
     depends_on:
       redis:
         condition: service_started
@@ -131,7 +136,7 @@ services:
   # Serves game static assets and leaderboard component bundles directly from
   # files copied into the image at build time, and reverse-proxies all dynamic
   # paths to the appropriate Go service or microservice. ngrok tunnels to this
-  # service rather than to app:8081 directly, so all external traffic — including
+  # service rather than to app:8080 directly, so all external traffic — including
   # QR-gated player phone access — enters through a single port.
   #
   # Build context is the repo root so the Dockerfile can COPY frontend/ alongside

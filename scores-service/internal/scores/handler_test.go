@@ -20,6 +20,8 @@ func (f *fakeStore) ReadBest(_ context.Context) ([]Standing, error) {
 }
 
 func (f *fakeStore) Subscribe(_ context.Context, _ chan<- struct{}) {}
+func (f *fakeStore) Write(_ context.Context, _ Entry) error  { return f.err }
+func (f *fakeStore) Notify(_ context.Context) error           { return nil }
 
 func newTestHandler(standings []Standing) *Handler {
 	return &Handler{store: &fakeStore{standings: standings}}
@@ -74,6 +76,58 @@ func TestHandlerCORSHeader(t *testing.T) {
 
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("CORS header = %q, want *", got)
+	}
+}
+
+func TestHandlerPostScoreCreated(t *testing.T) {
+	h := newTestHandler(nil)
+	body := strings.NewReader(`{"name":"Alice","score":42}`)
+	req := httptest.NewRequest(http.MethodPost, "/scores", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+}
+
+func TestHandlerPostScoreRejectsMissingName(t *testing.T) {
+	h := newTestHandler(nil)
+	body := strings.NewReader(`{"name":"","score":42}`)
+	req := httptest.NewRequest(http.MethodPost, "/scores", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for empty name", rec.Code)
+	}
+}
+
+func TestHandlerPostScoreRejectsMissingScore(t *testing.T) {
+	h := newTestHandler(nil)
+	body := strings.NewReader(`{"name":"Alice"}`)
+	req := httptest.NewRequest(http.MethodPost, "/scores", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for missing score", rec.Code)
+	}
+}
+
+func TestHandlerPostScoreRejectsNegativeScore(t *testing.T) {
+	h := newTestHandler(nil)
+	body := strings.NewReader(`{"name":"Alice","score":-1}`)
+	req := httptest.NewRequest(http.MethodPost, "/scores", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for negative score", rec.Code)
 	}
 }
 

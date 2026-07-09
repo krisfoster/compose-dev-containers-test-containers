@@ -12,27 +12,57 @@ import (
 
 	"crossywhale/app/internal/gate"
 	"crossywhale/app/internal/gate/gatetest"
-	"crossywhale/app/internal/leaderboard"
-	"crossywhale/app/internal/leaderboard/leaderboardtest"
 )
-
-// testLeaderboardSecret is the LEADERBOARD_API_SECRET newTestApp wires every test App
-// with, and testIndexHTMLTemplate is the fixture index.html those Apps serve — it
-// carries the same credential-injection placeholder as the real
-// frontend/game/index.html (specs/003-leaderboard-score-submission/research.md §4), so
-// tests can assert the rendered output actually contains the injected token.
-const testLeaderboardSecret = "test-leaderboard-secret"
-
-const testIndexHTMLTemplate = `<html><script>window.__LEADERBOARD_TOKEN__ = "{{.LeaderboardToken}}";</script>game</html>`
-
-// testIndexHTMLRendered is testIndexHTMLTemplate after template execution with
-// testLeaderboardSecret — what a request to /play should actually receive.
-const testIndexHTMLRendered = `<html><script>window.__LEADERBOARD_TOKEN__ = "` + testLeaderboardSecret + `";</script>game</html>`
 
 // testScriptJS is a stand-in for the real frontend/game/script.js, just to prove the
 // root-path asset fallthrough (handleRootOrAsset) still serves non-"/" paths from
 // frontendDir rather than the getting-started landing page.
 const testScriptJS = `console.log("fake game script");`
+
+// Minimal template fixtures: enough content to satisfy the handler assertions used
+// in existing tests. The real template files in templates/ are exercised by the
+// compose stack validation (quickstart.md); these fixtures keep unit tests fast
+// and focused on handler logic rather than page styling.
+
+const testGettingStartedHTML = `<!DOCTYPE html><html><body>
+<a href="/play">Play</a>
+<a href="/host">Host</a>
+<a href="/leaderboard">Leaderboard</a>
+</body></html>`
+
+const testHostHTML = `<!DOCTYPE html><html><body>
+<img id="qr" src="/qr.png">
+<form action="/host/rotate" method="post"><button>Rotate QR</button></form>
+<script>document.getElementById('rotate-form').addEventListener('submit', async (e) => {
+  const resp = await fetch('/host/rotate', { method: 'POST' });
+});</script>
+</body></html>`
+
+const testLeaderboardHTML = `<!DOCTYPE html><html><body>
+<div id="scores-root"></div>
+<script>ScoresComponent</script>
+<script src="/leaderboard-assets/scores-component.js"></script>
+<p id="scores-url">{{.ScoresServiceURL}}</p>
+<p id="commits-url">{{.CommitsServiceURL}}</p>
+</body></html>`
+
+// newTestTemplatesDir creates a temp directory containing all three page template
+// fixtures and returns its path. The caller's test cleanup removes it automatically.
+func newTestTemplatesDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"getting-started.html": testGettingStartedHTML,
+		"host.html":            testHostHTML,
+		"leaderboard.html":     testLeaderboardHTML,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write test template %s: %v", name, err)
+		}
+	}
+	return dir
+}
 
 // newTestApp builds an App wired to an in-memory fake WindowStore, a fake in-memory
 // ScoreStore, and a fake ngrok inspection API, so these tests never touch a real
@@ -49,7 +79,7 @@ func newTestApp(t *testing.T) (*App, *gatetest.FakeWindowStore) {
 	t.Cleanup(ngrokServer.Close)
 
 	frontendDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(frontendDir, "index.html"), []byte(testIndexHTMLTemplate), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(frontendDir, "index.html"), []byte(`<html><body>game</body></html>`), 0o644); err != nil {
 		t.Fatalf("write fake index.html: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(frontendDir, "script.js"), []byte(testScriptJS), 0o644); err != nil {
@@ -58,19 +88,118 @@ func newTestApp(t *testing.T) (*App, *gatetest.FakeWindowStore) {
 
 	store := &gatetest.FakeWindowStore{}
 	signer := gate.NewSigner([]byte("test-secret"), time.Hour)
-	scoreStore := &leaderboardtest.FakeScoreStore{}
 
 	app := &App{
-		store:              store,
-		gate:               gate.NewGate(store, signer),
-		frontendDir:        frontendDir,
-		ngrokAPIURL:        ngrokServer.URL,
-		qrWindowTTL:        time.Minute,
-		httpClient:         ngrokServer.Client(),
-		leaderboardHandler: leaderboard.NewHandler(scoreStore, testLeaderboardSecret, &leaderboardtest.FakeScoreNotifier{}),
-		leaderboardSecret:  testLeaderboardSecret,
+		store:       store,
+		gate:        gate.NewGate(store, signer),
+		signer:      signer,
+		frontendDir: frontendDir,
+		templatesDir: newTestTemplatesDir(t),
+		ngrokAPIURL: ngrokServer.URL,
+		qrWindowTTL: time.Minute,
+		httpClient:  ngrokServer.Client(),
 	}
 	return app, store
+}
+
+func TestHandleAuthCheckWithValidCookie(t *testing.T) {
+	app, _ := newTestApp(t)
+	grant, err := app.signer.Sign(gate.NewGrant("test-window"))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/check", nil)
+	req.AddCookie(&http.Cookie{Name: gate.GrantCookieName, Value: grant})
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for valid cw_grant", rec.Code)
+	}
+}
+
+func TestHandleAuthCheckWithNoCookie(t *testing.T) {
+	app, _ := newTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/auth/check", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 when no cookie", rec.Code)
+	}
+}
+
+func TestHandleAuthCheckWithExpiredCookie(t *testing.T) {
+	app, _ := newTestApp(t)
+	// Sign a grant with an IssuedAt 2 hours in the past — the app's signer has a 1-hour
+	// lifetime, so this grant is expired from the signer's perspective even though the
+	// HMAC is valid (same secret, different timestamp).
+	expiredGrant := gate.Grant{
+		GrantID:        "expired-grant",
+		IssuedWindowID: "test-window",
+		IssuedAt:       time.Now().Add(-2 * time.Hour),
+	}
+	cookieVal, err := app.signer.Sign(expiredGrant)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/check", nil)
+	req.AddCookie(&http.Cookie{Name: gate.GrantCookieName, Value: cookieVal})
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for expired grant", rec.Code)
+	}
+}
+
+func TestHandleAuthCheckWithInvalidCookie(t *testing.T) {
+	app, _ := newTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/auth/check", nil)
+	req.AddCookie(&http.Cookie{Name: gate.GrantCookieName, Value: "not.valid"})
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for invalid cookie value", rec.Code)
+	}
+}
+
+func TestHandleAuthCheckRejectsNonGet(t *testing.T) {
+	app, _ := newTestApp(t)
+	req := httptest.NewRequest(http.MethodPost, "/auth/check", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405 for non-GET", rec.Code)
+	}
+}
+
+func TestSingleMuxGatesPlayWithMiddleware(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/play", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 — single mux must gate /play via gate.Middleware", rec.Code)
+	}
+}
+
+func TestSingleMuxIssuesGrantOnValidToken(t *testing.T) {
+	app, store := newTestApp(t)
+	windowID, err := store.Activate(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/play?w="+windowID, nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (redirect after grant issuance)", rec.Code)
+	}
+	if cookies := rec.Header().Get("Set-Cookie"); cookies == "" {
+		t.Fatal("expected Set-Cookie header with cw_grant after valid window token")
+	}
 }
 
 func TestHandleHostAutoActivatesOnFirstVisit(t *testing.T) {
@@ -237,6 +366,21 @@ func TestHandleRootServesGettingStartedPage(t *testing.T) {
 	}
 }
 
+// TestHandleRootMissingTemplate confirms handleRootOrAsset returns 500 when the
+// getting-started.html template file cannot be found.
+func TestHandleRootMissingTemplate(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.templatesDir = t.TempDir() // empty — no templates here
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when getting-started.html is missing", rec.Code)
+	}
+}
+
 // The old /api/commits endpoint was removed when the commits microservice was
 // introduced (012-git-commits-microservice). The ungated mux must return 404.
 // The gated mux's catch-all "/" is gated, so an unauthenticated request returns
@@ -251,14 +395,6 @@ func TestOldCommitsEndpointRemoved(t *testing.T) {
 		t.Errorf("ungated mux /api/commits: got %d, want 404", rec.Code)
 	}
 
-	// On the gated mux, the gate catch-all returns 403 (no grant cookie) before
-	// any route lookup — verifying there is no dedicated commits route.
-	req2 := httptest.NewRequest(http.MethodGet, "/api/commits", nil)
-	rec2 := httptest.NewRecorder()
-	app.gatedMux().ServeHTTP(rec2, req2)
-	if rec2.Code != http.StatusForbidden {
-		t.Errorf("gated mux /api/commits without grant: got %d, want 403", rec2.Code)
-	}
 }
 
 // Non-root paths (game assets like script.js) must still fall through to the static
@@ -278,47 +414,23 @@ func TestHandleRootFallsThroughToStaticAssets(t *testing.T) {
 	}
 }
 
-// FR-004: the ungated listener serves /play with no cookie and no token required.
-func TestUngatedPlayRequiresNoGate(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/play", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if rec.Body.String() != testIndexHTMLRendered {
-		t.Fatalf("body = %q, want the rendered index.html content %q", rec.Body.String(), testIndexHTMLRendered)
-	}
-}
-
-// specs/003-leaderboard-score-submission FR-014: the leaderboard write credential is
-// injected into the served game page automatically, with no visible extra step for
-// the player. handlePlayIndex backs both listeners identically (see
-// TestGatedPlayAllowsValidToken for gate-specific behavior), so this only needs to
-// check the ungated listener's rendering.
-func TestHandlePlayIndexInjectsLeaderboardToken(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/play", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if !strings.Contains(rec.Body.String(), testLeaderboardSecret) {
-		t.Fatalf("index page body does not contain the injected leaderboard token:\n%s", rec.Body.String())
-	}
-}
+// /play on the single mux is gated by gate.Middleware, so a request with no cookie
+// is rejected with 403 (covered by TestSingleMuxGatesPlayWithMiddleware). A request
+// with a valid window token is redirected after grant issuance
+// (TestSingleMuxIssuesGrantOnValidToken). The template file missing case is below.
 
 func TestHandlePlayIndexWhenTemplateFileMissing(t *testing.T) {
 	app, _ := newTestApp(t)
 	app.frontendDir = t.TempDir() // no index.html written here
 
+	// gate.Middleware gates /play; attach a valid grant cookie so the middleware
+	// passes through to handlePlayIndex, which then fails on the missing template.
+	token, err := app.signer.Sign(gate.NewGrant("test-window"))
+	if err != nil {
+		t.Fatalf("signer.Sign: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/play", nil)
+	req.AddCookie(&http.Cookie{Name: gate.GrantCookieName, Value: token})
 	rec := httptest.NewRecorder()
 	app.ungatedMux().ServeHTTP(rec, req)
 
@@ -327,56 +439,6 @@ func TestHandlePlayIndexWhenTemplateFileMissing(t *testing.T) {
 	}
 }
 
-// US2: the gated listener rejects a request with neither a valid grant nor token,
-// including when no window has ever been activated at all (fail closed, FR-009).
-func TestGatedPlayRejectsWithNoGrantOrToken(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/play", nil)
-	rec := httptest.NewRecorder()
-	app.gatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
-
-func TestGatedPlayAllowsValidToken(t *testing.T) {
-	app, store := newTestApp(t)
-	windowID, err := store.Activate(context.Background(), time.Minute)
-	if err != nil {
-		t.Fatalf("Activate: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/play?w="+windowID, nil)
-	rec := httptest.NewRecorder()
-	app.gatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want %d (redirect after granting access)", rec.Code, http.StatusFound)
-	}
-}
-
-// FR-011 (specs/004-leaderboard-page/spec.md): /leaderboard is reachable on both
-// listeners with no credential or gating step.
-func TestHandleLeaderboardPageOnBothListeners(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	for name, mux := range map[string]http.Handler{"ungated": app.ungatedMux(), "gated": app.gatedMux()} {
-		t.Run(name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/leaderboard", nil)
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-			}
-			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-				t.Fatalf("Content-Type = %q, want text/html", ct)
-			}
-		})
-	}
-}
 
 // The page's own script (not exercised by this Go test) is what actually fetches and
 // polls standings; this only asserts the served markup wires up the expected pieces.
@@ -399,22 +461,122 @@ func TestHandleLeaderboardPageMountsScoresComponent(t *testing.T) {
 	}
 }
 
-// /qr.png, /host, and /host/rotate must not exist on the gated listener at all.
-func TestGatedListenerDoesNotExposeHostRoutes(t *testing.T) {
+// TestHandleLeaderboardPageInjectsServiceURLs confirms the template data fields
+// CommitsServiceURL and ScoresServiceURL are rendered into the leaderboard page.
+func TestHandleLeaderboardPageInjectsServiceURLs(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.commitsServiceURL = "http://commits.test"
+	app.scoresServiceURL = "http://scores.test"
+
+	req := httptest.NewRequest(http.MethodGet, "/leaderboard", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "http://commits.test") {
+		t.Fatal("leaderboard page missing injected commitsServiceURL")
+	}
+	if !strings.Contains(body, "http://scores.test") {
+		t.Fatal("leaderboard page missing injected scoresServiceURL")
+	}
+}
+
+// TestHandleLeaderboardPageMissingTemplate confirms handleLeaderboardPage returns 500
+// when the leaderboard.html template file cannot be found.
+func TestHandleLeaderboardPageMissingTemplate(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.templatesDir = t.TempDir() // empty — no templates here
+
+	req := httptest.NewRequest(http.MethodGet, "/leaderboard", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when leaderboard.html is missing", rec.Code)
+	}
+}
+
+// TestHandleHostMissingTemplate confirms handleHost returns 500 when host.html is
+// missing (after a successful window activation).
+func TestHandleHostMissingTemplate(t *testing.T) {
+	app, store := newTestApp(t)
+	app.templatesDir = t.TempDir() // empty — no templates here
+	if _, err := store.Activate(context.Background(), time.Minute); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/host", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when host.html is missing", rec.Code)
+	}
+}
+
+// TestHandlePingCompositeID confirms handlePing returns a composite id of the form
+// "<startupID>.<templateVersion>" and that the version part increments when
+// templateVersion is advanced.
+func TestHandlePingCompositeID(t *testing.T) {
 	app, _ := newTestApp(t)
 
-	for _, path := range []string{"/qr.png", "/host", "/host/rotate"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		rec := httptest.NewRecorder()
-		app.gatedMux().ServeHTTP(rec, req)
+	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
+	rec := httptest.NewRecorder()
+	app.handlePing(rec, req)
 
-		// Falls through to gatedMux's "/" gate, since these paths aren't
-		// separately registered there — so an unauthorized request is
-		// rejected (403), never served as if it were a real host route.
-		if rec.Code == http.StatusOK {
-			t.Fatalf("path %q unexpectedly succeeded on the gated listener", path)
-		}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
+	body := rec.Body.String()
+	// The id must contain a dot separating startupID from templateVersion.
+	if !strings.Contains(body, ".") {
+		t.Fatalf("ping response id missing dot separator: %s", body)
+	}
+	// Advance templateVersion and confirm the id changes.
+	app.templateVersion.Add(1)
+	rec2 := httptest.NewRecorder()
+	app.handlePing(rec2, httptest.NewRequest(http.MethodGet, "/api/ping", nil))
+	body2 := rec2.Body.String()
+	if body == body2 {
+		t.Fatalf("ping id did not change after templateVersion increment: %s", body2)
+	}
+}
+
+// TestWatchTemplatesDetectsChange confirms that watchTemplates increments
+// templateVersion when a monitored file's mtime advances.
+func TestWatchTemplatesDetectsChange(t *testing.T) {
+	app, _ := newTestApp(t)
+	// Point the watcher at the test templates dir (already contains the three files).
+	// Override the poll interval by starting watchTemplates directly in a goroutine
+	// — the default 1-second poll is fast enough for this test.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go app.watchTemplates(ctx)
+
+	// Give the watcher time to record its initial baselines.
+	time.Sleep(50 * time.Millisecond)
+
+	initialVersion := app.templateVersion.Load()
+
+	// Rewrite one of the template files to advance its mtime.
+	p := filepath.Join(app.templatesDir, "host.html")
+	if err := os.WriteFile(p, []byte(testHostHTML+" <!-- touched -->"), 0o644); err != nil {
+		t.Fatalf("rewrite host.html: %v", err)
+	}
+
+	// Wait up to 3 seconds for the watcher to detect the change.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if app.templateVersion.Load() > initialVersion {
+			return // success
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("templateVersion did not increment within 3s after modifying host.html (initial=%d, current=%d)",
+		initialVersion, app.templateVersion.Load())
 }
 
 func TestEnvOr(t *testing.T) {
@@ -443,29 +605,29 @@ func TestEnvDurationOr(t *testing.T) {
 
 func TestLoadConfigDefaults(t *testing.T) {
 	for _, key := range []string{
-		"APP_WEB_PORT", "APP_GATED_PORT", "REDIS_ADDR", "GRANT_COOKIE_SECRET",
+		"APP_WEB_PORT", "REDIS_ADDR", "GRANT_COOKIE_SECRET",
 		"QR_WINDOW_TTL", "GRANT_LIFETIME", "NGROK_API_URL", "FRONTEND_DIR",
-		"LEADERBOARD_API_SECRET",
+		"TEMPLATES_DIR",
 	} {
 		t.Setenv(key, "") // envOr/envDurationOr treat "" the same as unset
 	}
 
 	cfg := loadConfig()
-	if cfg.WebPort != "8080" || cfg.GatedPort != "8081" || cfg.RedisAddr != "redis:6379" {
+	if cfg.WebPort != "8080" || cfg.RedisAddr != "redis:6379" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if cfg.QRWindowTTL != 15*time.Minute || cfg.GrantLifetime != 4*time.Hour {
 		t.Fatalf("unexpected duration defaults: %+v", cfg)
 	}
-	if cfg.LeaderboardAPISecret != "dev-only-change-me" {
-		t.Fatalf("LeaderboardAPISecret = %q, want the dev default", cfg.LeaderboardAPISecret)
+	if cfg.TemplatesDir != "/templates" {
+		t.Fatalf("TemplatesDir = %q, want /templates", cfg.TemplatesDir)
 	}
 }
 
 func TestLoadConfigReadsOverrides(t *testing.T) {
 	t.Setenv("APP_WEB_PORT", "9090")
 	t.Setenv("QR_WINDOW_TTL", "5m")
-	t.Setenv("LEADERBOARD_API_SECRET", "super-secret")
+	t.Setenv("TEMPLATES_DIR", "/custom-templates")
 
 	cfg := loadConfig()
 	if cfg.WebPort != "9090" {
@@ -474,8 +636,8 @@ func TestLoadConfigReadsOverrides(t *testing.T) {
 	if cfg.QRWindowTTL != 5*time.Minute {
 		t.Fatalf("QRWindowTTL = %v, want 5m", cfg.QRWindowTTL)
 	}
-	if cfg.LeaderboardAPISecret != "super-secret" {
-		t.Fatalf("LeaderboardAPISecret = %q, want super-secret", cfg.LeaderboardAPISecret)
+	if cfg.TemplatesDir != "/custom-templates" {
+		t.Fatalf("TemplatesDir = %q, want /custom-templates", cfg.TemplatesDir)
 	}
 }
 
@@ -509,13 +671,13 @@ func appWithErroringStore(t *testing.T) *App {
 	store := erroringStore{}
 	frontendDir := t.TempDir()
 	return &App{
-		store:              store,
-		gate:               gate.NewGate(store, signer),
-		frontendDir:        frontendDir,
-		ngrokAPIURL:        "http://127.0.0.1:1/unreachable",
-		qrWindowTTL:        time.Minute,
-		httpClient:         &http.Client{Timeout: 200 * time.Millisecond},
-		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret, &leaderboardtest.FakeScoreNotifier{}),
+		store:       store,
+		gate:        gate.NewGate(store, signer),
+		frontendDir: frontendDir,
+		templatesDir: newTestTemplatesDir(t),
+		ngrokAPIURL: "http://127.0.0.1:1/unreachable",
+		qrWindowTTL: time.Minute,
+		httpClient:  &http.Client{Timeout: 200 * time.Millisecond},
 	}
 }
 
@@ -553,10 +715,10 @@ func (activateFailsStore) Activate(context.Context, time.Duration) (string, erro
 func TestHandleHostWhenActivateFails(t *testing.T) {
 	store := activateFailsStore{}
 	app := &App{
-		store:              store,
-		gate:               gate.NewGate(store, gate.NewSigner([]byte("test-secret"), time.Hour)),
-		frontendDir:        t.TempDir(),
-		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret, &leaderboardtest.FakeScoreNotifier{}),
+		store:        store,
+		gate:         gate.NewGate(store, gate.NewSigner([]byte("test-secret"), time.Hour)),
+		frontendDir:  t.TempDir(),
+		templatesDir: newTestTemplatesDir(t),
 	}
 	req := httptest.NewRequest(http.MethodGet, "/host", nil)
 	rec := httptest.NewRecorder()
@@ -625,6 +787,6 @@ func TestDiscoverPublicHostNoHTTPSTunnel(t *testing.T) {
 	app.ngrokAPIURL = noTunnelServer.URL
 
 	if _, err := app.discoverPublicHost(context.Background()); err == nil {
-		t.Fatal("expected an error when no https tunnel is reported")
+		t.Fatal("expected no https tunnel is reported")
 	}
 }

@@ -59,7 +59,7 @@ services:
   redis:            # in-memory data store (leaderboard + QR gate state)
   app:              # Go backend - built from source
   commits-service:  # microservice: serves recent git commits as JSON + SSE
-  scores-service:   # microservice: serves leaderboard standings as JSON + SSE
+  scores-service:   # microservice: accepts score submissions and streams leaderboard standings
   nginx:            # reverse proxy + static file server (single public ingress)
   ngrok:            # public tunnel (optional, --profile public)
 ```
@@ -141,7 +141,7 @@ Open [`app/internal/gate/window_test.go`](app/internal/gate/window_test.go) and 
 
 **Why a real container instead of a mock**: a mock Redis client can be programmed to return the right answers, but it can't reproduce actual Redis behaviour: TTL expiry timing, stream semantics, command argument expectations. Tests that passed against a mock have broken in production when Redis behaviour differed in subtle ways. A real container gives you the same confidence as running against production, and it only costs a few extra seconds per test run.
 
-For a second example, open [`app/internal/leaderboard/store_test.go`](app/internal/leaderboard/store_test.go). The same pattern tests the leaderboard's Redis Stream operations.
+For a second example, open [`scores-service/internal/scores/store_test.go`](scores-service/internal/scores/store_test.go). The same pattern tests the leaderboard's Redis Stream operations in the scores microservice.
 
 For the interface design that makes this possible (tests use a fast in-memory fake; only the Redis implementation tests use Testcontainers), look at [`app/internal/gate/window.go`](app/internal/gate/window.go) and the `WindowStore` interface comment.
 
@@ -239,15 +239,19 @@ open http://localhost/host   # shows the current QR code, with a button to rotat
 
 **Inspecting the tunnel**: while the `public` profile is running, ngrok's local web inspector is at <http://localhost:4040>. It shows the current public URL and a live log of incoming requests.
 
-The public URL only serves the game to visitors who have scanned the current QR code. Anyone else sees a "scan the QR code to play" message. Display `/host` on a presenter-only screen: the QR code and its "Rotate" button are not exposed on the public endpoint — nginx routes `/play` to the gated port but has no public `/host` route. Local play at `localhost/play` keeps working even if the tunnel is down.
+The public URL only serves the game to visitors who have scanned the current QR code. Anyone else sees a "scan the QR code to play" message. Display `/host` on a presenter-only screen: the QR code and its "Rotate" button are not exposed on the public endpoint — nginx has no public `/host` route. Local play at `localhost/play-local` keeps working even if the tunnel is down — that route mints a grant cookie directly, bypassing the QR scan.
 
 ---
 
 ## Leaderboard scores
 
-Before playing, each player enters a display name. On death, their score is shown on a "Game Over" screen and submitted to a Redis-backed leaderboard automatically. A "Replay" button restarts immediately, reusing the same name. Score writes are protected by `LEADERBOARD_API_SECRET` (set in `.env`, injected into the served game page automatically), so only the game client itself can record a score.
+Before playing, each player enters a display name. On death, their score is shown on a "Game Over" screen and submitted to a Redis-backed leaderboard automatically. A "Replay" button restarts immediately, reusing the same name.
+
+Score writes are protected by the QR-grant cookie (`cw_grant`). nginx validates this cookie via an internal `auth_request` sub-request to the Go app before forwarding any `POST /api/leaderboard/scores` request to the scores microservice. Requests without a valid cookie are rejected with 401 before reaching the application layer. No secret is embedded in the game page.
 
 Current standings are at `http://localhost/leaderboard`, a wall/booth display that refreshes automatically as new scores come in via a live Server-Sent Events connection to the scores microservice.
+
+**Playing locally**: the landing page's "Play the game" button links to `/play-local`, a presenter-only shortcut that mints a grant cookie over plain HTTP (no QR scan required). `/play` is the QR-gated path used by attendees on their phones via ngrok.
 
 ---
 

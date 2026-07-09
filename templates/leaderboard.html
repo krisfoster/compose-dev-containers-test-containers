@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Crossy Whale - Leaderboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: sans-serif; background: #0b1b2b; color: #fff; margin: 0; padding: 2rem 1.5rem; }
+  h1 { text-align: center; margin-top: 0; }
+  /* Outer wrapper: 80% of viewport, centred */
+  .layout { display: flex; flex-direction: row; align-items: flex-start; gap: 2rem; width: 80%; margin: 0 auto; }
+  /* Left column: 48% of layout — QR codes + gif */
+  .left-col { flex: 0 0 48%; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
+  /* Two QR codes side by side, each ~45% of the left column */
+  .qr-row { display: flex; flex-direction: row; gap: 2%; width: 100%; }
+  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; flex: 0 0 45%; min-width: 0; }
+  .qr-wrap img.qr { border-radius: 0.5rem; background: #fff; width: 100%; height: auto; }
+  .qr-wrap h2 { margin: 0 0 0.4rem; font-size: 1rem; text-align: center; }
+  .qr-wrap button { margin-top: 0.25rem; padding: 0.4rem 1rem; border: 1px solid rgba(255,255,255,0.25); border-radius: 0.4rem; background: transparent; color: #fff; cursor: pointer; font-size: 0.85rem; }
+  .qr-wrap button:hover { background: rgba(255,255,255,0.1); }
+  /* Gif at 90% of the left column */
+  .demo-gif { width: 90%; border-radius: 0.5rem; display: block; }
+  /* Middle column: 32% of layout — leaderboard standings */
+  .right-col { flex: 0 0 32%; display: flex; flex-direction: column; }
+  h2 { margin: 0 0 0.75rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
+  #scores-root ul { list-style: none; padding: 0; margin: 0; }
+  #scores-root li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.25rem; }
+  #scores-root li:first-child { border-top: 1px solid rgba(255,255,255,0.1); }
+  #scores-root .rank { opacity: 0.5; min-width: 2.5rem; font-size: 1rem; }
+  #scores-root .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #scores-root .score { font-weight: bold; font-variant-numeric: tabular-nums; }
+  #scores-root p { opacity: 0.65; font-size: 1rem; margin: 0.5rem 0 0; }
+  /* Right column: 20% of layout — recent commits */
+  .commit-col { flex: 0 0 20%; display: flex; flex-direction: column; min-width: 0; }
+  .commit-col h2 { margin: 0 0 0.75rem; }
+  #commits { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  #commits li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
+  #commits-root ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  #commits-root li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
+  #commits-root .chash { font-family: monospace; font-weight: bold; opacity: 0.9; display: block; }
+  #commits-root .cauthor { opacity: 0.7; font-size: 0.68rem; display: block; margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #commits-root .cdate { opacity: 0.55; display: block; margin-top: 0.15rem; }
+  #commits-root .cmsg { display: block; margin-top: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #commits-root p { opacity: 0.55; font-size: 0.8rem; margin: 0.25rem 0 0; }
+  @media (max-width: 900px) { .layout { flex-direction: column; width: 100%; } .left-col, .right-col, .commit-col { flex: none; width: 100%; } }
+</style>
+</head>
+<body>
+<h1>🐋 Crossy Whale Leaderboard 🐋</h1>
+<div class="layout">
+  <div class="left-col">
+    <div class="qr-row">
+      <div class="qr-wrap">
+        <h2>Scan to play</h2>
+        <img class="qr" id="qr-img" src="/qr.png" alt="QR code to join"
+             onerror="this.dataset.err='1'" width="280" height="280">
+        <button id="qr-refresh">Refresh QR</button>
+      </div>
+      <div class="qr-wrap">
+        <h2>View the repo</h2>
+        <img class="qr" src="/repo-qr.png" alt="QR code to GitHub repo" width="280" height="280">
+      </div>
+    </div>
+    <img class="demo-gif" src="/container-obstacles.gif" alt="Crossy Whale gameplay">
+  </div>
+  <div class="right-col">
+    <h2>Standings</h2>
+    <div id="scores-root"></div>
+  </div>
+  <div class="commit-col">
+    <h2>Recent commits</h2>
+    <div id="commits-root"></div>
+  </div>
+</div>
+<script>
+(function () {
+  // QR polling: retry if the image failed to load (ngrok not ready yet).
+  var qrImg = document.getElementById('qr-img');
+  setInterval(function () {
+    if (!qrImg.dataset.err) return;
+    var next = new Image();
+    next.onload = function () {
+      qrImg.src = next.src;
+      delete qrImg.dataset.err;
+    };
+    next.src = '/qr.png?t=' + Date.now();
+  }, 3000);
+
+  // Rotate the QR code — used by both the manual button and the auto-rotate timer.
+  function rotateQR() {
+    fetch('/host/rotate', { method: 'POST' }).then(function (resp) {
+      if (resp.ok) { qrImg.src = '/qr.png?t=' + Date.now(); }
+    });
+  }
+
+  // Manual QR refresh button.
+  document.getElementById('qr-refresh').addEventListener('click', rotateQR);
+
+  // Auto-rotate every 60 seconds so the QR code stays fresh.
+  setInterval(rotateQR, 60000);
+})();
+</script>
+<script>
+(function () {
+  var knownID = null;
+  setInterval(function () {
+    fetch('/api/ping')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (knownID === null) { knownID = data.id; return; }
+        if (data.id !== knownID) { location.reload(); }
+      })
+      .catch(function () {});
+  }, 2000);
+})();
+</script>
+<!-- React components: scores feed (013-leaderboard-scores-microservice) and
+     commit feed (012-git-commits-microservice).
+     Bundles are vendored under frontend/leaderboard/ (see ATTRIBUTION.md). -->
+<script src="/leaderboard-assets/react.production.min.js"></script>
+<script src="/leaderboard-assets/react-dom.production.min.js"></script>
+<script type="module">
+import { ScoresComponent } from '/leaderboard-assets/scores-component.js';
+const scoresRoot = ReactDOM.createRoot(document.getElementById('scores-root'));
+scoresRoot.render(React.createElement(ScoresComponent, { scoresServiceURL: '{{.ScoresServiceURL}}' }));
+</script>
+<script type="module">
+import { CommitsComponent } from '/leaderboard-assets/commits-component.js';
+const root = ReactDOM.createRoot(document.getElementById('commits-root'));
+root.render(React.createElement(CommitsComponent, { commitsServiceURL: '{{.CommitsServiceURL}}' }));
+</script>
+</body>
+</html>

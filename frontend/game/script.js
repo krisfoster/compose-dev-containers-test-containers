@@ -65,7 +65,6 @@ async function submitScore(name, score) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Leaderboard-Token': window.__LEADERBOARD_TOKEN__ || '',
       },
       body: JSON.stringify({ name, score }),
     });

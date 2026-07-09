@@ -4,16 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 )
 
-// storeReader is the minimal interface handler needs from the store.
+// scoreStore is the interface handler needs from the store.
 // Using an interface instead of *Store directly lets handler_test.go
 // inject a fakeStore without a real Redis connection.
-type storeReader interface {
+type scoreStore interface {
 	ReadBest(ctx context.Context) ([]Standing, error)
 	Subscribe(ctx context.Context, ch chan<- struct{})
+	Write(ctx context.Context, entry Entry) error
+	Notify(ctx context.Context) error
 }
+
+// MaxNameLength is the longest accepted player name in characters (trimmed).
+const MaxNameLength = 32
 
 type standingsResponse struct {
 	Standings []Standing `json:"standings"`
@@ -21,7 +29,7 @@ type standingsResponse struct {
 
 // Handler serves GET /scores and GET /scores/stream.
 type Handler struct {
-	store storeReader
+	store scoreStore
 }
 
 // NewHandler returns a Handler backed by store.
@@ -38,12 +46,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/scores":
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
+		switch r.Method {
+		case http.MethodGet:
+			h.serveList(w, r)
+		case http.MethodPost:
+			h.serveSubmit(w, r)
+		default:
+			w.Header().Set("Allow", "GET, POST")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		h.serveList(w, r)
 	case "/scores/stream":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -108,6 +119,62 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type submitScoreRequest struct {
+	Name  string `json:"name"`
+	Score *int   `json:"score"`
+}
+
+// serveSubmit handles POST /scores: validates the payload and writes to Redis.
+// Authorization is enforced upstream by nginx auth_request before this runs.
+func (h *Handler) serveSubmit(w http.ResponseWriter, r *http.Request) {
+	var req submitScoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name must not be empty")
+		return
+	}
+	if utf8.RuneCountInString(name) > MaxNameLength {
+		writeError(w, http.StatusBadRequest, "name too long")
+		return
+	}
+	if req.Score == nil {
+		writeError(w, http.StatusBadRequest, "score is required")
+		return
+	}
+	if *req.Score < 0 {
+		writeError(w, http.StatusBadRequest, "score must not be negative")
+		return
+	}
+
+	if err := h.store.Write(r.Context(), Entry{Name: name, Score: *req.Score}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record score")
+		return
+	}
+
+	if err := h.store.Notify(r.Context()); err != nil {
+		log.Printf("scores: notify: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]bool{"recorded": true})
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(errorResponse{Error: message})
+}
+
 func (h *Handler) sendStandingsEvent(w http.ResponseWriter, ctx context.Context) error {
 	standings, err := h.store.ReadBest(ctx)
 	if err != nil {
@@ -126,6 +193,6 @@ func (h *Handler) sendStandingsEvent(w http.ResponseWriter, ctx context.Context)
 
 func setCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }

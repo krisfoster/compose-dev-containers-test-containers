@@ -1,5 +1,36 @@
 <!--
 Sync Impact Report
+Version change: 1.4.0 -> 1.4.1
+Modified principles: Technology Stack — "Permanent Routing Layer carve-out" updated
+  The sentence "Gate enforcement MUST remain in the Go app and is reached by proxying to the Go
+  gated internal port" is replaced to reflect the post-016 model: score-submission auth is
+  enforced by nginx auth_request to GET /auth/check on port 8080; play-path auth is enforced by
+  gate.Middleware applied per-route on the single mux on port 8080. The second (gated) internal
+  port (8081) is removed. auth_request is now explicitly listed as a permitted routing-layer
+  capability when it delegates to a Go handler for the auth decision.
+Added sections: (none)
+Removed sections: (none)
+Rationale: Feature 016-nginx-auth-score-integrity removes the gated second listener (port 8081)
+  and replaces it with: (a) nginx auth_request on /api/leaderboard/scores, which calls
+  GET /auth/check on port 8080 — the Go handler validates the cw_grant HMAC cookie; (b)
+  gate.Middleware applied directly on the single mux's /play route. The old constitution clause
+  "Gate enforcement MUST remain in the Go app and is reached by proxying to the Go gated internal
+  port" was accurate for 014 but incorrect after 016 removes the gated port. auth_request is a
+  routing-layer delegation mechanism, not business logic — the Go /auth/check handler owns the
+  cryptographic decision. The carve-out scope (no business logic in nginx) is preserved.
+Templates requiring updates:
+  OK  .specify/templates/plan-template.md: no constitution-derived language to update
+  OK  .specify/templates/spec-template.md: no constitution reference; no update needed
+  OK  .specify/templates/tasks-template.md: no constitution reference; no update needed
+Follow-up TODOs:
+  TODO(ROUTING-LAYER-SCOPE): Review note from 1.4.0 still applies — if the routing layer grows
+    beyond auth_request delegation and simple routing, revisit whether it has become a business-
+    logic layer.
+  TODO(INTERIM-HOSTING-SUNSET): Carry-over from 1.4.0 — retire once nginx is the permanent layer.
+-->
+
+<!--
+Sync Impact Report
 Version change: 1.3.0 -> 1.4.0
 Modified principles: (none renamed or removed)
 Added sections:
@@ -225,11 +256,15 @@ public ingress for the demo stack. Unlike the Interim Static Hosting carve-out, 
 co-exists permanently with the Go backend rather than bridging a pre-backend gap. The routing
 service's permitted scope is strictly: (a) serving game and leaderboard static assets directly
 from files copied into its image at build time; (b) reverse-proxying requests that require
-business logic to the appropriate Go service or microservice via `proxy_pass`. The routing service
-MUST NOT implement any business logic — no gate enforcement, no token generation, no session
-management, no request rewriting beyond path-based routing. Gate enforcement MUST remain in the
-Go app and is reached by proxying to the Go gated internal port. This carve-out does not extend
-to OpenResty, Caddy, Traefik, or other routing platforms unless amended.
+business logic to the appropriate Go service or microservice via `proxy_pass`; (c) delegating
+authorization decisions to a Go handler via `auth_request` — nginx enforces the HTTP 401/200
+result but the cryptographic decision (HMAC cookie verification) is made entirely inside the Go
+app. The routing service MUST NOT implement any business logic — no gate enforcement, no token
+generation, no session management, no request rewriting beyond path-based routing. Gate
+enforcement MUST remain in the Go app: score-submission auth is enforced by nginx `auth_request`
+delegating to `GET /auth/check` on port 8080; play-path auth is enforced by `gate.Middleware`
+applied per-route on the single mux on port 8080. This carve-out does not extend to OpenResty,
+Caddy, Traefik, or other routing platforms unless amended.
 
 ## Development Workflow
 
@@ -271,4 +306,4 @@ plan's Complexity Tracking section before it is accepted.
 
 Runtime guidance for day-to-day work lives in `crossy.md` at the repo root.
 
-**Version**: 1.4.0 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-09
+**Version**: 1.4.1 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-09

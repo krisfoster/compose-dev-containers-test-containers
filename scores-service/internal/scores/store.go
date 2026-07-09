@@ -84,6 +84,29 @@ func (s *Store) ReadBest(ctx context.Context) ([]Standing, error) {
 	return standings, nil
 }
 
+// Entry is one completed game attempt's recorded result.
+type Entry struct {
+	Name  string
+	Score int
+}
+
+// Write appends entry to the leaderboard:scores Redis Stream.
+func (s *Store) Write(ctx context.Context, entry Entry) error {
+	return s.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: scoresStreamKey,
+		Values: map[string]any{
+			"name":  entry.Name,
+			"score": entry.Score,
+		},
+	}).Err()
+}
+
+// Notify publishes a score-change notification to s.channel so SSE subscribers
+// receive a live push after each successful write.
+func (s *Store) Notify(ctx context.Context) error {
+	return s.client.Publish(ctx, s.channel, "").Err()
+}
+
 // Subscribe subscribes to the pub/sub channel and sends struct{}{} on ch each
 // time a message arrives. It runs until ctx is cancelled.
 func (s *Store) Subscribe(ctx context.Context, ch chan<- struct{}) {

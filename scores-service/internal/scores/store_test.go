@@ -156,6 +156,71 @@ func TestReadBestRespectsLimit(t *testing.T) {
 	}
 }
 
+func TestStoreWriteThenReadBack(t *testing.T) {
+	client := newTestRedisClient(t)
+	store := NewStore(client, 10, "leaderboard:score-updated")
+	ctx := context.Background()
+
+	if err := store.Write(ctx, Entry{Name: "kris", Score: 42}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	standings, err := store.ReadBest(ctx)
+	if err != nil {
+		t.Fatalf("ReadBest: %v", err)
+	}
+	if len(standings) != 1 || standings[0].Name != "kris" || standings[0].Score != 42 {
+		t.Fatalf("ReadBest after Write = %+v, want [{kris 42}]", standings)
+	}
+}
+
+func TestStoreWriteAppendsRatherThanOverwrites(t *testing.T) {
+	client := newTestRedisClient(t)
+	store := NewStore(client, 10, "leaderboard:score-updated")
+	ctx := context.Background()
+
+	if err := store.Write(ctx, Entry{Name: "kris", Score: 10}); err != nil {
+		t.Fatalf("Write (1): %v", err)
+	}
+	if err := store.Write(ctx, Entry{Name: "kris", Score: 20}); err != nil {
+		t.Fatalf("Write (2): %v", err)
+	}
+
+	length, err := client.XLen(ctx, scoresStreamKey).Result()
+	if err != nil {
+		t.Fatalf("XLen: %v", err)
+	}
+	if length != 2 {
+		t.Fatalf("XLen = %d, want 2 (repeat name must not overwrite)", length)
+	}
+}
+
+func TestStoreNotifyPublishesToChannel(t *testing.T) {
+	client := newTestRedisClient(t)
+	store := NewStore(client, 10, "leaderboard:score-updated")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sub := client.Subscribe(ctx, "leaderboard:score-updated")
+	defer sub.Close()
+	msgCh := sub.Channel()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := store.Notify(ctx); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	select {
+	case msg := <-msgCh:
+		if msg.Channel != "leaderboard:score-updated" {
+			t.Fatalf("received on channel %q, want leaderboard:score-updated", msg.Channel)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Notify did not deliver message within 2s")
+	}
+}
+
 func TestSubscribeFiresOnPublish(t *testing.T) {
 	client := newTestRedisClient(t)
 	store := NewStore(client, 10, "leaderboard:score-updated")
