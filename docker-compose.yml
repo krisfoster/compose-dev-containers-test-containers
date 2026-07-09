@@ -1,6 +1,19 @@
 # Docker Compose defines the entire application as a set of named services.
 # Running `docker compose up` starts all services together, wired on a shared
 # private network — no host-side installs beyond Docker Desktop are needed.
+#
+# Port exposure policy:
+#   expose: — port reachable by other services on the Compose network only (not host)
+#   ports:  — port published to the host machine (bypass-able from localhost)
+#
+# nginx (port 80) is the sole host-published ingress. All microservices use
+# expose: so they are only reachable via nginx, which enforces the auth gate.
+# The app service also publishes port 8080 for direct developer access.
+#
+# To temporarily restore direct host access to a microservice for debugging:
+#   echo "services:\n  scores-service:\n    ports:\n      - \"8083:8083\"" \
+#     > docker-compose.override.yml
+# docker-compose.override.yml is merged automatically by `docker compose up`.
 name: whale-runner
 
 services:
@@ -98,8 +111,9 @@ services:
   # structured JSON (GET /commits) and a Server-Sent Events stream
   # (GET /commits/stream). It mounts the same read-only .git volume as the
   # app service previously did, reads up to 20 commits from HEAD, and serves
-  # no HTML. In normal operation the browser reaches it via nginx at /commits;
-  # port 8082 is also published directly for developer access.
+  # no HTML. In normal operation the browser reaches it via nginx at /commits.
+  # The port is intentionally not published to the host; use a
+  # docker-compose.override.yml to temporarily restore port 8082 for debugging.
   commits-service:
     build:
       context: commits-service
@@ -108,8 +122,8 @@ services:
     environment:
       - GIT_REPO_PATH=/repo
       - COMMITS_LISTEN_ADDR=:8082
-    ports:
-      - "8082:8082"
+    expose:
+      - "8082"
     volumes:
       - ./.git:/repo/.git:ro
 
@@ -117,8 +131,10 @@ services:
   # structured JSON (GET /scores) and a Server-Sent Events stream
   # (GET /scores/stream). It reads from the leaderboard:scores Redis Stream and
   # subscribes to the leaderboard:score-updated pub/sub channel for live updates.
-  # In normal operation the browser reaches it via nginx at /scores; port 8083
-  # is also published directly for developer access.
+  # In normal operation the browser reaches it via nginx at /scores. The port is
+  # intentionally not published to the host — POST /scores must pass through the
+  # nginx auth_request gate (see nginx/nginx.conf). Use a docker-compose.override.yml
+  # to temporarily restore port 8083 for debugging if needed.
   scores-service:
     build:
       context: scores-service
@@ -129,16 +145,17 @@ services:
       - SCORES_LISTEN_ADDR=:8083
       - SCORES_LIMIT=${SCORES_LIMIT:-10}
       - REDIS_PUBSUB_CHANNEL=leaderboard:score-updated
-    ports:
-      - "8083:8083"
+    expose:
+      - "8083"
     depends_on:
       redis:
         condition: service_started
 
   # qr-service — dedicated microservice that renders QR code PNGs on demand
   # (018-qr-code-microservice). Accepts GET /qr.png?content=<url>&size=<pixels>
-  # and returns a PNG. Called internally by the app service; not browser-visible.
-  # Port 8084 is published for direct developer access.
+  # and returns a PNG. Called internally by the app service via Docker Compose DNS;
+  # not host-reachable. Use a docker-compose.override.yml to restore port 8084 for
+  # debugging if needed.
   qr-service:
     build:
       context: qr-service
@@ -146,8 +163,8 @@ services:
     image: whale-runner-qr:local
     environment:
       - QR_LISTEN_ADDR=:8084
-    ports:
-      - "8084:8084"
+    expose:
+      - "8084"
 
   # nginx — single public ingress for the demo stack (014-nginx-front-door).
   # Serves game static assets and leaderboard component bundles directly from
