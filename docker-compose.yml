@@ -209,7 +209,7 @@ services:
     # the single public ingress on the Compose network). The authtoken comes from
     # .env so it stays out of the config file and out of version control.
     volumes:
-      - ./ngrok.yml:/etc/ngrok/ngrok.yml
+      - ./ngrok/ngrok.yml:/etc/ngrok/ngrok.yml
     command: ["start", "--all", "--config=/etc/ngrok/ngrok.yml"]
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
