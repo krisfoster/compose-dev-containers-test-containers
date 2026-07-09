@@ -220,6 +220,7 @@ func (a *App) ungatedMux() http.Handler {
 	mux.HandleFunc("/api/ping", a.handlePing)
 	mux.HandleFunc("/leaderboard", a.handleLeaderboardPage)
 	mux.HandleFunc("/auth/check", a.handleAuthCheck)
+	mux.HandleFunc("/host/rotate", a.handleHostRotate)
 	return mux
 }
 
@@ -355,6 +356,22 @@ func (a *App) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleHostRotate activates a new QR join window, invalidating the previous one.
+// It is called by the leaderboard page's "Refresh QR" button and 60-second auto-rotate
+// timer. Returns 204 on success; 500 if the store is unavailable.
+func (a *App) handleHostRotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if _, err := a.store.Activate(r.Context(), a.qrWindowTTL); err != nil {
+		http.Error(w, "failed to rotate window", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleRepoQRPNG serves a static QR code that encodes the project's GitHub URL.

@@ -698,3 +698,55 @@ func TestDiscoverPublicHostNoHTTPSTunnel(t *testing.T) {
 		t.Fatal("expected no https tunnel is reported")
 	}
 }
+
+// TestHandleHostRotateActivatesNewWindow confirms POST /host/rotate returns 204 and
+// leaves an active, non-empty window ID in the store.
+func TestHandleHostRotateActivatesNewWindow(t *testing.T) {
+	app, store := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/host/rotate", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	windowID, err := store.Current(context.Background())
+	if err != nil {
+		t.Fatalf("store.Current: %v", err)
+	}
+	if windowID == "" {
+		t.Fatal("expected a non-empty window ID after rotation, got empty")
+	}
+}
+
+// TestHandleHostRotateStoreError confirms POST /host/rotate returns 500 when the
+// store's Activate call fails.
+func TestHandleHostRotateStoreError(t *testing.T) {
+	app := appWithErroringStore(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/host/rotate", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestHandleHostRotateMethodNotAllowed confirms that non-POST requests to
+// /host/rotate are rejected with 405 and the Allow header set to POST.
+func TestHandleHostRotateMethodNotAllowed(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/host/rotate", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+	if allow := rec.Header().Get("Allow"); allow != http.MethodPost {
+		t.Fatalf("Allow header = %q, want POST", allow)
+	}
+}

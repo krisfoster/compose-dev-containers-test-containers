@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" >
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Crossy Whale">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/manifest.json">
+  <title>Crossy Road</title>
+  <link rel="stylesheet" href="./style.css">
+  <link rel="icon" href="./favicon.ico">
+  <script src="https://kit.fontawesome.com/622afd0c30.js"></script>
+
+</head>
+<body>
+<div id="name-prompt">
+  <form id="name-form">
+    <label for="name-input">Enter your name to play</label>
+    <input id="name-input" type="text" maxlength="32" autocomplete="off" autofocus>
+    <p id="leaderboard-link-prompt">
+      <a href="/leaderboard" target="_blank" rel="noopener">View the leaderboard</a>
+    </p>
+    <p id="cc-attribution">
+      <a href="https://sketchfab.com/3d-models/moby-dock-docker-whale-b706010291ca46ad8daca2d4aeb79edd"
+         target="_blank" rel="noopener">"Moby Dock (Docker whale)" by Maurice Svay</a>,
+      licensed under
+      <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>.
+      Scaled and re-oriented for use in this project.<br>
+      <a href="https://skfb.ly/FZOL" target="_blank" rel="noopener">"Container" by Willy Decarpentrie</a>,
+      licensed under
+      <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>.
+    </p>
+    <button type="submit">Play</button>
+  </form>
+</div>
+
+<div id="counter">0</div>
+
+<div id="controls">
+  <div>
+    <button id="forward">
+      <svg width="30" height="30" viewBox="0 0 10 10">
+        <g transform="rotate(0, 5,5)">
+          <path d="M5,4 L7,6 L3,6 L5,4" />
+        </g>
+      </svg>
+    </button>
+    <button id="left">
+      <svg width="30" height="30" viewBox="0 0 10 10">
+        <g transform="rotate(-90, 5,5)">
+          <path d="M5,4 L7,6 L3,6 L5,4" />
+        </g>
+      </svg>
+    </button>
+    <button id="backward">
+      <svg width="30" height="30" viewBox="0 0 10 10">
+        <g transform="rotate(180, 5,5)">
+          <path d="M5,4 L7,6 L3,6 L5,4" />
+        </g>
+      </svg>
+    </button>
+    <button id="right">
+      <svg width="30" height="30" viewBox="0 0 10 10">
+        <g transform="rotate(90, 5,5)">
+          <path d="M5,4 L7,6 L3,6 L5,4" />
+        </g>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<div id="end">
+  <div id="end-content">
+    <h1>Game Over</h1>
+    <p>Score: <span id="final-score">0</span></p>
+    <button id="retry">Replay</button>
+  </div>
+</div>
+
+<div class= "credits">
+  Made with <i class="fas fa-heart"></i> & 🐓
+</div>
+
+  <div id="fullscreen-tip" style="display:none; position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.82); color:#fff; padding:12px 18px; border-radius:10px; z-index:200; white-space:nowrap; pointer-events:none;">
+    <span style="font-size:0.35em; letter-spacing:0.02em;">For full screen: tap Share &#x2192; Add to Home Screen</span>
+  </div>
+
+  <div id="rotate-prompt">
+    <span class="rp-icon">&#8635;</span>
+    <p>Please rotate your device to landscape</p>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./script.js"></script>
+
+</body>
+</html>
