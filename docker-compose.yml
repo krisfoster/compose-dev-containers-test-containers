@@ -53,9 +53,7 @@ services:
       - GRANT_COOKIE_SECRET=${GRANT_COOKIE_SECRET:-dev-only-change-me}
       - QR_WINDOW_TTL=${QR_WINDOW_TTL:-15m}
       - NGROK_API_URL=http://ngrok:4040/api/tunnels
-      - FRONTEND_DIR=/frontend
       - APP_WEB_PORT=8080
-      - LEADERBOARD_ASSETS_DIR=/leaderboard-assets
       # COMMITS_SERVICE_URL is the browser-visible base URL of the commits microservice.
       # With nginx as the single ingress (014-nginx-front-door), the browser connects
       # to http://localhost (port 80) and nginx proxies /commits/* to commits-service.
@@ -66,6 +64,9 @@ services:
       # to http://localhost (port 80) and nginx proxies /scores/* to scores-service.
       # Override in .env for demo environments (e.g. SCORES_SERVICE_URL=https://demo.ngrok.app).
       - SCORES_SERVICE_URL=${SCORES_SERVICE_URL:-http://localhost}
+      # QR_SERVICE_URL is the internal base URL of the qr microservice (018-qr-code-microservice).
+      # The app calls this to render QR code PNGs; it is not browser-visible.
+      - QR_SERVICE_URL=http://qr-service:8084
       # TEMPLATES_DIR is the container-side path to the page template .html files.
       # The bind mount below makes host edits visible inside the container immediately,
       # enabling live reload (015-extract-html-templates). In production the templates
@@ -90,6 +91,8 @@ services:
       ngrok:
         condition: service_healthy
         required: false
+      qr-service:
+        condition: service_started
 
   # commits-service — dedicated microservice that serves recent git commits as
   # structured JSON (GET /commits) and a Server-Sent Events stream
@@ -132,6 +135,20 @@ services:
       redis:
         condition: service_started
 
+  # qr-service — dedicated microservice that renders QR code PNGs on demand
+  # (018-qr-code-microservice). Accepts GET /qr.png?content=<url>&size=<pixels>
+  # and returns a PNG. Called internally by the app service; not browser-visible.
+  # Port 8084 is published for direct developer access.
+  qr-service:
+    build:
+      context: qr-service
+      dockerfile: Dockerfile
+    image: whale-runner-qr:local
+    environment:
+      - QR_LISTEN_ADDR=:8084
+    ports:
+      - "8084:8084"
+
   # nginx — single public ingress for the demo stack (014-nginx-front-door).
   # Serves game static assets and leaderboard component bundles directly from
   # files copied into the image at build time, and reverse-proxies all dynamic
@@ -154,6 +171,8 @@ services:
       scores-service:
         condition: service_started
       commits-service:
+        condition: service_started
+      qr-service:
         condition: service_started
 
   # ngrok — creates a secure public tunnel so players can reach the game over the

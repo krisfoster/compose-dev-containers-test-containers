@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,11 +17,6 @@ import (
 	"crossywhale/app/internal/gate/gatetest"
 )
 
-// testScriptJS is a stand-in for the real frontend/game/script.js, just to prove the
-// root-path asset fallthrough (handleRootOrAsset) still serves non-"/" paths from
-// frontendDir rather than the getting-started landing page.
-const testScriptJS = `console.log("fake game script");`
-
 // Minimal template fixtures: enough content to satisfy the handler assertions used
 // in existing tests. The real template files in templates/ are exercised by the
 // compose stack validation (quickstart.md); these fixtures keep unit tests fast
@@ -26,16 +24,7 @@ const testScriptJS = `console.log("fake game script");`
 
 const testGettingStartedHTML = `<!DOCTYPE html><html><body>
 <a href="/play">Play</a>
-<a href="/host">Host</a>
 <a href="/leaderboard">Leaderboard</a>
-</body></html>`
-
-const testHostHTML = `<!DOCTYPE html><html><body>
-<img id="qr" src="/qr.png">
-<form action="/host/rotate" method="post"><button>Rotate QR</button></form>
-<script>document.getElementById('rotate-form').addEventListener('submit', async (e) => {
-  const resp = await fetch('/host/rotate', { method: 'POST' });
-});</script>
 </body></html>`
 
 const testLeaderboardHTML = `<!DOCTYPE html><html><body>
@@ -52,8 +41,8 @@ func newTestTemplatesDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
+		"index.html":           `<html><body>game</body></html>`,
 		"getting-started.html": testGettingStartedHTML,
-		"host.html":            testHostHTML,
 		"leaderboard.html":     testLeaderboardHTML,
 	}
 	for name, content := range files {
@@ -64,8 +53,20 @@ func newTestTemplatesDir(t *testing.T) string {
 	return dir
 }
 
-// newTestApp builds an App wired to an in-memory fake WindowStore, a fake in-memory
-// ScoreStore, and a fake ngrok inspection API, so these tests never touch a real
+// minimalPNG returns a valid 1×1 PNG image for use as a stub response in tests
+// that need a realistic image/png body without the real qr-service running.
+func minimalPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode stub PNG: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// newTestApp builds an App wired to an in-memory fake WindowStore, a fake ngrok
+// inspection API, and a fake qr-service stub, so these tests never touch a real
 // container or the network (constitution Principle III reserves real Redis for the
 // WindowStore's and ScoreStore's own tests; everything above that boundary is fair
 // game for fakes).
@@ -78,26 +79,25 @@ func newTestApp(t *testing.T) (*App, *gatetest.FakeWindowStore) {
 	}))
 	t.Cleanup(ngrokServer.Close)
 
-	frontendDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(frontendDir, "index.html"), []byte(`<html><body>game</body></html>`), 0o644); err != nil {
-		t.Fatalf("write fake index.html: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(frontendDir, "script.js"), []byte(testScriptJS), 0o644); err != nil {
-		t.Fatalf("write fake script.js: %v", err)
-	}
+	stubPNG := minimalPNG(t)
+	qrServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(stubPNG)
+	}))
+	t.Cleanup(qrServer.Close)
 
 	store := &gatetest.FakeWindowStore{}
 	signer := gate.NewSigner([]byte("test-secret"), time.Hour)
 
 	app := &App{
-		store:       store,
-		gate:        gate.NewGate(store, signer),
-		signer:      signer,
-		frontendDir: frontendDir,
+		store:        store,
+		gate:         gate.NewGate(store, signer),
+		signer:       signer,
 		templatesDir: newTestTemplatesDir(t),
-		ngrokAPIURL: ngrokServer.URL,
-		qrWindowTTL: time.Minute,
-		httpClient:  ngrokServer.Client(),
+		ngrokAPIURL:  ngrokServer.URL,
+		qrWindowTTL:  time.Minute,
+		httpClient:   &http.Client{Timeout: 3 * time.Second},
+		qrServiceURL: qrServer.URL,
 	}
 	return app, store
 }
@@ -202,83 +202,25 @@ func TestSingleMuxIssuesGrantOnValidToken(t *testing.T) {
 	}
 }
 
-func TestHandleHostAutoActivatesOnFirstVisit(t *testing.T) {
+func TestHandleQRPNGAutoActivatesWhenNoWindow(t *testing.T) {
 	app, store := newTestApp(t)
-
-	before, err := store.Current(context.Background())
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if before != "" {
-		t.Fatalf("test setup: expected no window active yet, got %q", before)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/host", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-
-	after, err := store.Current(context.Background())
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if after == "" {
-		t.Fatal("expected /host to auto-activate a window on first visit")
-	}
-}
-
-func TestHandleHostDoesNotReactivateWhenAlreadyActive(t *testing.T) {
-	app, store := newTestApp(t)
-	existing, err := store.Activate(context.Background(), time.Minute)
-	if err != nil {
-		t.Fatalf("Activate: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/host", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	current, err := store.Current(context.Background())
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if current != existing {
-		t.Fatalf("Current() = %q, want unchanged %q", current, existing)
-	}
-}
-
-// The rotate button must submit via fetch/JS so the QR image updates without a full
-// page reload, per the presenter-facing UX request; this checks that wiring is
-// actually present in the served markup rather than asserting on behavior a Go test
-// can't execute (there's no JS runtime here to click the button).
-func TestHandleHostPageWiresUpInPlaceRotate(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/host", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	body := rec.Body.String()
-	if !strings.Contains(body, `id="qr"`) {
-		t.Fatal("host page missing img#qr for the rotate script to target")
-	}
-	if !strings.Contains(body, `fetch('/host/rotate'`) {
-		t.Fatal("host page missing the in-place rotate fetch() call")
-	}
-}
-
-func TestHandleQRPNGBeforeAnyWindowActive(t *testing.T) {
-	app, _ := newTestApp(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/qr.png", nil)
 	rec := httptest.NewRecorder()
 	app.ungatedMux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d before any window is active", rec.Code, http.StatusServiceUnavailable)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d — /qr.png should auto-activate and return PNG", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", ct)
+	}
+	after, err := store.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if after == "" {
+		t.Fatal("/qr.png should have auto-activated a window")
 	}
 }
 
@@ -303,42 +245,19 @@ func TestHandleQRPNGWithActiveWindow(t *testing.T) {
 	}
 }
 
-func TestHandleHostRotateGeneratesFreshWindow(t *testing.T) {
+func TestHandleQRPNGWhenQRServiceDown(t *testing.T) {
 	app, store := newTestApp(t)
-	oldID, err := store.Activate(context.Background(), time.Minute)
-	if err != nil {
+	if _, err := store.Activate(context.Background(), time.Minute); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
+	app.qrServiceURL = "http://127.0.0.1:1/unreachable"
 
-	req := httptest.NewRequest(http.MethodPost, "/host/rotate", nil)
+	req := httptest.NewRequest(http.MethodGet, "/qr.png", nil)
 	rec := httptest.NewRecorder()
 	app.ungatedMux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
-	}
-	if loc := rec.Header().Get("Location"); loc != "/host" {
-		t.Fatalf("Location = %q, want /host", loc)
-	}
-
-	newID, err := store.Current(context.Background())
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if newID == "" || newID == oldID {
-		t.Fatalf("Current() = %q, want a fresh window distinct from %q", newID, oldID)
-	}
-}
-
-func TestHandleHostRotateRejectsGet(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/host/rotate", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d when qr-service is down", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -356,7 +275,7 @@ func TestHandleRootServesGettingStartedPage(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`href="/play"`, `href="/host"`, `href="/leaderboard"`} {
+	for _, want := range []string{`href="/play"`, `href="/leaderboard"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("landing page missing link %q:\n%s", want, body)
 		}
@@ -397,23 +316,6 @@ func TestOldCommitsEndpointRemoved(t *testing.T) {
 
 }
 
-// Non-root paths (game assets like script.js) must still fall through to the static
-// file server, not the getting-started page.
-func TestHandleRootFallsThroughToStaticAssets(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/script.js", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if rec.Body.String() != testScriptJS {
-		t.Fatalf("body = %q, want the raw script.js content %q", rec.Body.String(), testScriptJS)
-	}
-}
-
 // /play on the single mux is gated by gate.Middleware, so a request with no cookie
 // is rejected with 403 (covered by TestSingleMuxGatesPlayWithMiddleware). A request
 // with a valid window token is redirected after grant issuance
@@ -421,7 +323,7 @@ func TestHandleRootFallsThroughToStaticAssets(t *testing.T) {
 
 func TestHandlePlayIndexWhenTemplateFileMissing(t *testing.T) {
 	app, _ := newTestApp(t)
-	app.frontendDir = t.TempDir() // no index.html written here
+	app.templatesDir = t.TempDir() // no index.html written here
 
 	// gate.Middleware gates /play; attach a valid grant cookie so the middleware
 	// passes through to handlePlayIndex, which then fails on the missing template.
@@ -499,24 +401,6 @@ func TestHandleLeaderboardPageMissingTemplate(t *testing.T) {
 	}
 }
 
-// TestHandleHostMissingTemplate confirms handleHost returns 500 when host.html is
-// missing (after a successful window activation).
-func TestHandleHostMissingTemplate(t *testing.T) {
-	app, store := newTestApp(t)
-	app.templatesDir = t.TempDir() // empty — no templates here
-	if _, err := store.Activate(context.Background(), time.Minute); err != nil {
-		t.Fatalf("Activate: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/host", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 when host.html is missing", rec.Code)
-	}
-}
-
 // TestHandlePingCompositeID confirms handlePing returns a composite id of the form
 // "<startupID>.<templateVersion>" and that the version part increments when
 // templateVersion is advanced.
@@ -562,9 +446,9 @@ func TestWatchTemplatesDetectsChange(t *testing.T) {
 	initialVersion := app.templateVersion.Load()
 
 	// Rewrite one of the template files to advance its mtime.
-	p := filepath.Join(app.templatesDir, "host.html")
-	if err := os.WriteFile(p, []byte(testHostHTML+" <!-- touched -->"), 0o644); err != nil {
-		t.Fatalf("rewrite host.html: %v", err)
+	p := filepath.Join(app.templatesDir, "leaderboard.html")
+	if err := os.WriteFile(p, []byte(testLeaderboardHTML+" <!-- touched -->"), 0o644); err != nil {
+		t.Fatalf("rewrite leaderboard.html: %v", err)
 	}
 
 	// Wait up to 3 seconds for the watcher to detect the change.
@@ -575,7 +459,7 @@ func TestWatchTemplatesDetectsChange(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("templateVersion did not increment within 3s after modifying host.html (initial=%d, current=%d)",
+	t.Fatalf("templateVersion did not increment within 3s after modifying leaderboard.html (initial=%d, current=%d)",
 		initialVersion, app.templateVersion.Load())
 }
 
@@ -606,8 +490,7 @@ func TestEnvDurationOr(t *testing.T) {
 func TestLoadConfigDefaults(t *testing.T) {
 	for _, key := range []string{
 		"APP_WEB_PORT", "REDIS_ADDR", "GRANT_COOKIE_SECRET",
-		"QR_WINDOW_TTL", "GRANT_LIFETIME", "NGROK_API_URL", "FRONTEND_DIR",
-		"TEMPLATES_DIR",
+		"QR_WINDOW_TTL", "GRANT_LIFETIME", "NGROK_API_URL", "TEMPLATES_DIR",
 	} {
 		t.Setenv(key, "") // envOr/envDurationOr treat "" the same as unset
 	}
@@ -669,15 +552,13 @@ func appWithErroringStore(t *testing.T) *App {
 	t.Helper()
 	signer := gate.NewSigner([]byte("test-secret"), time.Hour)
 	store := erroringStore{}
-	frontendDir := t.TempDir()
 	return &App{
-		store:       store,
-		gate:        gate.NewGate(store, signer),
-		frontendDir: frontendDir,
+		store:        store,
+		gate:         gate.NewGate(store, signer),
 		templatesDir: newTestTemplatesDir(t),
-		ngrokAPIURL: "http://127.0.0.1:1/unreachable",
-		qrWindowTTL: time.Minute,
-		httpClient:  &http.Client{Timeout: 200 * time.Millisecond},
+		ngrokAPIURL:  "http://127.0.0.1:1/unreachable",
+		qrWindowTTL:  time.Minute,
+		httpClient:   &http.Client{Timeout: 200 * time.Millisecond},
 	}
 }
 
@@ -691,18 +572,8 @@ func TestHandleQRPNGWhenStoreErrors(t *testing.T) {
 	}
 }
 
-func TestHandleHostWhenStoreErrors(t *testing.T) {
-	app := appWithErroringStore(t)
-	req := httptest.NewRequest(http.MethodGet, "/host", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-}
-
 // activateFailsStore succeeds at reporting "no window active" but fails specifically
-// on Activate, to exercise handleHost's second, distinct error branch (separate from
+// on Activate, to exercise handleQRPNG's auto-activation error branch (separate from
 // its Current-fails branch, covered above by erroringStore).
 type activateFailsStore struct{}
 
@@ -712,19 +583,23 @@ func (activateFailsStore) Activate(context.Context, time.Duration) (string, erro
 	return "", errIntentionalTestFailure
 }
 
-func TestHandleHostWhenActivateFails(t *testing.T) {
+func TestHandleQRPNGWhenAutoActivateFails(t *testing.T) {
 	store := activateFailsStore{}
+	signer := gate.NewSigner([]byte("test-secret"), time.Hour)
 	app := &App{
 		store:        store,
-		gate:         gate.NewGate(store, gate.NewSigner([]byte("test-secret"), time.Hour)),
-		frontendDir:  t.TempDir(),
+		gate:         gate.NewGate(store, signer),
+		signer:       signer,
 		templatesDir: newTestTemplatesDir(t),
+		ngrokAPIURL:  "http://127.0.0.1:1/unreachable",
+		qrWindowTTL:  time.Minute,
+		httpClient:   &http.Client{Timeout: 200 * time.Millisecond},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/host", nil)
+	req := httptest.NewRequest(http.MethodGet, "/qr.png", nil)
 	rec := httptest.NewRecorder()
 	app.ungatedMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+		t.Fatalf("status = %d, want 500 when auto-activation fails", rec.Code)
 	}
 }
 
@@ -747,16 +622,6 @@ func TestHandleQRPNGWhenNgrokUnreachable(t *testing.T) {
 	}
 }
 
-func TestHandleHostRotateWhenStoreErrors(t *testing.T) {
-	app := appWithErroringStore(t)
-	req := httptest.NewRequest(http.MethodPost, "/host/rotate", nil)
-	rec := httptest.NewRecorder()
-	app.ungatedMux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
-	}
-}
-
 func TestDiscoverPublicHostUnreachable(t *testing.T) {
 	app, _ := newTestApp(t)
 	app.ngrokAPIURL = "http://127.0.0.1:1/unreachable"
@@ -775,6 +640,49 @@ func TestDiscoverPublicHostMalformedJSON(t *testing.T) {
 
 	if _, err := app.discoverPublicHost(context.Background()); err == nil {
 		t.Fatal("expected an error for malformed JSON")
+	}
+}
+
+func TestHandleRepoQRPNGReturnsValidPNG(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/repo-qr.png", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", ct)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("expected non-empty PNG body")
+	}
+}
+
+func TestHandleRepoQRPNGCacheControl(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/repo-qr.png", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=86400" {
+		t.Fatalf("Cache-Control = %q, want public, max-age=86400", cc)
+	}
+}
+
+func TestHandleRepoQRPNGWhenQRServiceDown(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.qrServiceURL = "http://127.0.0.1:1/unreachable"
+
+	req := httptest.NewRequest(http.MethodGet, "/repo-qr.png", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d when qr-service is down", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 

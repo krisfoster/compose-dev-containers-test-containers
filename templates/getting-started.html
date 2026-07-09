@@ -7,7 +7,6 @@
   h1 { margin-top: 0; }
   a.button { display: block; text-align: center; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0.5rem; text-decoration: none; font-weight: bold; color: #fff; }
   a.play { background: #1f6feb; }
-  a.host { background: #6e7681; }
   a.leaderboard { background: #2ea043; }
   .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start; max-width: 800px; margin: 0 auto; }
   .qr-col { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
@@ -21,17 +20,11 @@
 <div class="layout">
   <div class="nav-col">
     <a class="button play" href="/play-local">Play the game</a>
-    <a class="button host" href="/host">Host: show the QR code</a>
     <a class="button leaderboard" href="/leaderboard">View the leaderboard</a>
   </div>
   <div class="qr-col" id="qr-col">
-    <img id="qr-img" src="/qr.png" alt="QR code to join" width="280" height="280"
-         style="display:none"
-         onload="this.style.display='';document.getElementById('qr-hint').style.display='none';document.getElementById('qr-caption').style.display=''">
-    <p id="qr-hint" style="color:#aaa;font-size:0.85rem;text-align:center;max-width:220px;margin:0">
-      Visit <a href="/host">/host</a> to activate the QR code
-    </p>
-    <p id="qr-caption" style="display:none">Scan to play on your phone</p>
+    <img id="qr-img" src="/qr.png" alt="QR code to join" width="280" height="280">
+    <p id="qr-caption">Scan to play on your phone</p>
   </div>
 </div>
 <script>
@@ -39,14 +32,7 @@
   var img = document.getElementById('qr-img');
   setInterval(function () {
     var next = new Image();
-    next.onload = function () {
-      img.src = next.src;
-      img.style.display = '';
-      var hint = document.getElementById('qr-hint');
-      if (hint) hint.style.display = 'none';
-      var caption = document.getElementById('qr-caption');
-      if (caption) caption.style.display = '';
-    };
+    next.onload = function () { img.src = next.src; };
     next.src = '/qr.png?t=' + Date.now();
   }, 4000);
 })();

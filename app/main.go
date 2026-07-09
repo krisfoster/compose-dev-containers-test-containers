@@ -1,12 +1,8 @@
-// Command app serves Crossy Whale on two listeners: an ungated one for the
-// presenter's local access (docker-compose.yml publishes this port to the host), and
-// a gated one that only the ngrok service points at. See
-// specs/002-qr-gated-access/contracts/gate-http-contract.md for the full route table.
-// The leaderboard API (score submission, added by 003-leaderboard-score-submission, and
-// standings retrieval, added by 004-leaderboard-page) is documented separately in
-// specs/004-leaderboard-page/contracts/leaderboard-openapi.yaml. The leaderboard
-// display page itself (004-leaderboard-page) is served at /leaderboard on both
-// listeners, ungated (FR-011/FR-013 of that feature's spec.md).
+// Command app serves Crossy Whale. It handles dynamic routes (QR gate, game page,
+// host management, leaderboard page, auth check) and renders four Go templates from
+// the TEMPLATES_DIR directory. Static game assets (JS, CSS, models) are served
+// exclusively by nginx; the app has no file server of its own. See
+// specs/002-qr-gated-access/contracts/gate-http-contract.md for the route table.
 package main
 
 import (
@@ -14,8 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,7 +23,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"crossywhale/app/internal/gate"
-	"crossywhale/app/internal/qrcode"
 )
 
 // startupID is set once when the process starts. The browser polls /api/ping
@@ -43,22 +40,21 @@ func main() {
 	g := gate.NewGate(store, signer)
 
 	app := &App{
-		store:                store,
-		gate:                 g,
-		signer:               signer,
-		frontendDir:          cfg.FrontendDir,
-		templatesDir:         cfg.TemplatesDir,
-		ngrokAPIURL:          cfg.NgrokAPIURL,
-		qrWindowTTL:          cfg.QRWindowTTL,
-		httpClient:           &http.Client{Timeout: 3 * time.Second},
-		leaderboardAssetsDir: cfg.LeaderboardAssetsDir,
-		commitsServiceURL:    cfg.CommitsServiceURL,
-		scoresServiceURL:     cfg.ScoresServiceURL,
+		store:             store,
+		gate:              g,
+		signer:            signer,
+		templatesDir:      cfg.TemplatesDir,
+		ngrokAPIURL:       cfg.NgrokAPIURL,
+		qrWindowTTL:       cfg.QRWindowTTL,
+		httpClient:        &http.Client{Timeout: 3 * time.Second},
+		commitsServiceURL: cfg.CommitsServiceURL,
+		scoresServiceURL:  cfg.ScoresServiceURL,
+		qrServiceURL:      cfg.QRServiceURL,
 	}
 
 	// Fail fast if any page template is missing — better to surface this at
 	// startup than to silently serve 500s on the first request to each page.
-	for _, name := range []string{"getting-started.html", "host.html", "leaderboard.html"} {
+	for _, name := range []string{"getting-started.html", "leaderboard.html"} {
 		p := filepath.Join(cfg.TemplatesDir, name)
 		if _, err := os.Stat(p); err != nil {
 			log.Fatalf("template file missing: %s: %v", p, err)
@@ -77,17 +73,16 @@ func main() {
 
 // Config holds the environment-driven settings for the app service.
 type Config struct {
-	WebPort              string
-	RedisAddr            string
-	GrantCookieSecret    string
-	QRWindowTTL          time.Duration
-	GrantLifetime        time.Duration
-	NgrokAPIURL          string
-	FrontendDir          string
-	TemplatesDir         string
-	LeaderboardAssetsDir string
-	CommitsServiceURL    string
-	ScoresServiceURL     string
+	WebPort           string
+	RedisAddr         string
+	GrantCookieSecret string
+	QRWindowTTL       time.Duration
+	GrantLifetime     time.Duration
+	NgrokAPIURL       string
+	TemplatesDir      string
+	CommitsServiceURL string
+	ScoresServiceURL  string
+	QRServiceURL      string
 }
 
 func loadConfig() Config {
@@ -101,13 +96,12 @@ func loadConfig() Config {
 		GrantCookieSecret:    envOr("GRANT_COOKIE_SECRET", "dev-only-change-me"),
 		QRWindowTTL:          envDurationOr("QR_WINDOW_TTL", 15*time.Minute),
 		GrantLifetime:        envDurationOr("GRANT_LIFETIME", 4*time.Hour),
-		NgrokAPIURL:          envOr("NGROK_API_URL", "http://ngrok:4040/api/tunnels"),
-		FrontendDir:          envOr("FRONTEND_DIR", "/frontend"),
-		// TEMPLATES_DIR is the container-side path to the page template .html files.
-		// In the compose stack it is bind-mounted from ./templates so edits on the
-		// host reach the running container immediately for live-reload (015-extract-html-templates).
-		TemplatesDir:         envOr("TEMPLATES_DIR", "/templates"),
-		LeaderboardAssetsDir: envOr("LEADERBOARD_ASSETS_DIR", "/leaderboard-assets"),
+		NgrokAPIURL: envOr("NGROK_API_URL", "http://ngrok:4040/api/tunnels"),
+		// TEMPLATES_DIR is the container-side path to the page template .html files,
+		// including index.html (the game page). Bind-mounted from ./templates in
+		// docker-compose.yml so edits on the host reach the running container
+		// immediately for live-reload (015-extract-html-templates).
+		TemplatesDir: envOr("TEMPLATES_DIR", "/templates"),
 		// CommitsServiceURL is the base URL of the commits microservice, reachable
 		// from the browser. Default is localhost:8082 for local dev; override via
 		// COMMITS_SERVICE_URL in docker-compose or .env for demo environments.
@@ -116,6 +110,10 @@ func loadConfig() Config {
 		// from the browser. Default is localhost:8083 for local dev; override via
 		// SCORES_SERVICE_URL in docker-compose or .env for demo environments.
 		ScoresServiceURL: envOr("SCORES_SERVICE_URL", "http://localhost:8083"),
+		// QRServiceURL is the internal base URL of the qr microservice, reachable
+		// only from within the Compose network. Default is localhost:8084 for local dev;
+		// set to http://qr-service:8084 in docker-compose (018-qr-code-microservice).
+		QRServiceURL: envOr("QR_SERVICE_URL", "http://localhost:8084"),
 	}
 }
 
@@ -138,19 +136,18 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 	return d
 }
 
-// App holds the dependencies shared by both listeners' handlers.
+// App holds the dependencies shared by the request handlers.
 type App struct {
-	store                gate.WindowStore
-	gate                 *gate.Gate
-	signer               *gate.Signer
-	frontendDir          string
-	templatesDir         string
-	ngrokAPIURL          string
-	qrWindowTTL          time.Duration
-	httpClient           *http.Client
-	leaderboardAssetsDir string
-	commitsServiceURL    string
-	scoresServiceURL     string
+	store             gate.WindowStore
+	gate              *gate.Gate
+	signer            *gate.Signer
+	templatesDir      string
+	ngrokAPIURL       string
+	qrWindowTTL       time.Duration
+	httpClient        *http.Client
+	commitsServiceURL string
+	scoresServiceURL  string
+	qrServiceURL      string
 	// templateVersion is atomically incremented by watchTemplates whenever any
 	// page template file on disk changes. handlePing incorporates it into the
 	// response id so the browser auto-reloads within its next poll cycle.
@@ -162,8 +159,8 @@ type App struct {
 // next /api/ping response carries a new id and all open browsers reload.
 func (a *App) watchTemplates(ctx context.Context) {
 	files := []string{
+		filepath.Join(a.templatesDir, "index.html"),
 		filepath.Join(a.templatesDir, "getting-started.html"),
-		filepath.Join(a.templatesDir, "host.html"),
 		filepath.Join(a.templatesDir, "leaderboard.html"),
 	}
 	baselines := make(map[string]time.Time, len(files))
@@ -195,15 +192,13 @@ func (a *App) watchTemplates(ctx context.Context) {
 	}
 }
 
-// ungatedMux serves the game with no access check at all (FR-004), plus the
-// presenter-only routes for displaying and rotating the QR code (FR-002, FR-007).
-// The bare "/" serves a getting-started landing page rather than the raw game
-// index.html — routing players through the explicit "/play" link ensures the
-// gate.Middleware cookie check runs before the game loads.
+// ungatedMux serves the game with no access check at all (FR-004). The bare "/"
+// serves a getting-started landing page rather than the raw game index.html —
+// routing players through the explicit "/play" link ensures the gate.Middleware
+// cookie check runs before the game loads.
 func (a *App) ungatedMux() http.Handler {
 	mux := http.NewServeMux()
-	fileServer := http.FileServer(http.Dir(a.frontendDir))
-	mux.Handle("/", a.handleRootOrAsset(fileServer))
+	mux.HandleFunc("/", a.handleRootOrAsset)
 	mux.Handle("/play", a.gate.Middleware(http.HandlerFunc(a.handlePlayIndex)))
 	mux.HandleFunc("/play-local", func(w http.ResponseWriter, r *http.Request) {
 		token, err := a.signer.Sign(gate.NewGrant("local"))
@@ -221,25 +216,18 @@ func (a *App) ungatedMux() http.Handler {
 		a.handlePlayIndex(w, r)
 	})
 	mux.HandleFunc("/qr.png", a.handleQRPNG)
-	mux.HandleFunc("/repo-qr.png", handleRepoQRPNG)
+	mux.HandleFunc("/repo-qr.png", a.handleRepoQRPNG)
 	mux.HandleFunc("/api/ping", a.handlePing)
-	mux.HandleFunc("/host", a.handleHost)
-	mux.HandleFunc("/host/rotate", a.handleHostRotate)
 	mux.HandleFunc("/leaderboard", a.handleLeaderboardPage)
-	mux.Handle("/leaderboard-assets/", http.StripPrefix("/leaderboard-assets/", http.FileServer(http.Dir(a.leaderboardAssetsDir))))
 	mux.HandleFunc("/auth/check", a.handleAuthCheck)
 	return mux
 }
 
-// handlePlayIndex serves the game's index page under the /play path the QR code
-// encodes, rendered as an html/template rather than a raw file so the configured
-// leaderboard write credential can be injected into an inline script tag for the
-// game client to read (specs/003-leaderboard-score-submission/research.md §4). The
-// frontend's own asset references are root-relative (./script.js resolves to
-// /script.js from a request to /play), which the same listener's root file server
-// (also gated, on the gated mux) already serves.
+// handlePlayIndex serves the game's index page. The template lives in templatesDir
+// alongside the other page templates; static assets (script.js, models, etc.) are
+// served by nginx from its own document root.
 func (a *App) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.ParseFiles(filepath.Join(a.frontendDir, "index.html"))
+	tmpl, err := template.ParseFiles(filepath.Join(a.templatesDir, "index.html"))
 	if err != nil {
 		http.Error(w, "failed to load game", http.StatusInternalServerError)
 		return
@@ -250,9 +238,9 @@ func (a *App) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleQRPNG returns the current QR code as a PNG. It does not itself activate a
-// window — that only happens via /host — so a request here before the presenter has
-// ever opened /host correctly reports "not ready" rather than fabricating a code.
+// handleQRPNG returns the current QR code as a PNG. If no window is currently
+// active it auto-activates one, so the first load always produces a valid code.
+// PNG rendering is delegated to qr-service (018-qr-code-microservice).
 func (a *App) handleQRPNG(w http.ResponseWriter, r *http.Request) {
 	windowID, err := a.store.Current(r.Context())
 	if err != nil {
@@ -260,8 +248,11 @@ func (a *App) handleQRPNG(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if windowID == "" {
-		http.Error(w, "no active QR code yet - open /host to generate one", http.StatusServiceUnavailable)
-		return
+		windowID, err = a.store.Activate(r.Context(), a.qrWindowTTL)
+		if err != nil {
+			http.Error(w, "failed to activate QR window", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	publicHost, err := a.discoverPublicHost(r.Context())
@@ -270,9 +261,13 @@ func (a *App) handleQRPNG(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	png, err := qrcode.RenderPNG(qrcode.BuildPlayURL(publicHost, windowID), 320)
+	playU := &url.URL{Scheme: "https", Host: publicHost, Path: "/play"}
+	q := playU.Query()
+	q.Set("w", windowID)
+	playU.RawQuery = q.Encode()
+	png, err := a.renderQR(r.Context(), playU.String(), 320)
 	if err != nil {
-		http.Error(w, "failed to render QR code", http.StatusInternalServerError)
+		http.Error(w, "QR render service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
@@ -281,44 +276,14 @@ func (a *App) handleQRPNG(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRootOrAsset serves the getting-started page for an exact "/" request and
-// delegates everything else (script.js, style.css, model assets, ...) to assets — the
-// same catch-all fileServer /play's rendered page depends on for its own
-// root-relative asset references.
-func (a *App) handleRootOrAsset(assets http.Handler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			assets.ServeHTTP(w, r)
-			return
-		}
-		p := filepath.Join(a.templatesDir, "getting-started.html")
-		tmpl, err := template.ParseFiles(p)
-		if err != nil {
-			log.Printf("template parse error %s: %v", p, err)
-			http.Error(w, "failed to load page", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.Execute(w, nil); err != nil {
-			log.Printf("template execute error %s: %v", p, err)
-		}
-	}
-}
-
-// handleHost renders the presenter-facing page embedding the QR code, auto-activating
-// the first window on first visit if none is active yet (FR-002).
-func (a *App) handleHost(w http.ResponseWriter, r *http.Request) {
-	current, err := a.store.Current(r.Context())
-	if err != nil {
-		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+// 404 for all other paths. Static game assets are served by nginx; the app has no
+// file server of its own.
+func (a *App) handleRootOrAsset(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
 		return
 	}
-	if current == "" {
-		if _, err := a.store.Activate(r.Context(), a.qrWindowTTL); err != nil {
-			http.Error(w, "failed to activate a QR code", http.StatusInternalServerError)
-			return
-		}
-	}
-	p := filepath.Join(a.templatesDir, "host.html")
+	p := filepath.Join(a.templatesDir, "getting-started.html")
 	tmpl, err := template.ParseFiles(p)
 	if err != nil {
 		log.Printf("template parse error %s: %v", p, err)
@@ -329,19 +294,6 @@ func (a *App) handleHost(w http.ResponseWriter, r *http.Request) {
 	if err := tmpl.Execute(w, nil); err != nil {
 		log.Printf("template execute error %s: %v", p, err)
 	}
-}
-
-// handleHostRotate invalidates the current QR code and issues a fresh one (FR-007).
-func (a *App) handleHostRotate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if _, err := a.store.Activate(r.Context(), a.qrWindowTTL); err != nil {
-		http.Error(w, "failed to rotate the QR code", http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/host", http.StatusSeeOther)
 }
 
 // handleLeaderboardPage serves the leaderboard display page, rendering the
@@ -408,15 +360,36 @@ func (a *App) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 // handleRepoQRPNG serves a static QR code that encodes the project's GitHub URL.
 // Unlike /qr.png it requires no active window and no ngrok tunnel — the target
 // URL never changes, so the PNG can be generated fresh on each request cheaply.
-func handleRepoQRPNG(w http.ResponseWriter, r *http.Request) {
-	png, err := qrcode.RenderPNG(repoURL, 320)
+// PNG rendering is delegated to qr-service (018-qr-code-microservice).
+func (a *App) handleRepoQRPNG(w http.ResponseWriter, r *http.Request) {
+	png, err := a.renderQR(r.Context(), repoURL, 320)
 	if err != nil {
-		http.Error(w, "failed to render QR code", http.StatusInternalServerError)
+		http.Error(w, "QR render service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(png)
+}
+
+// renderQR calls qr-service to render content as a PNG of roughly size×size pixels.
+// It returns the raw PNG bytes or an error if the service is unreachable or returns
+// a non-200 status.
+func (a *App) renderQR(ctx context.Context, content string, size int) ([]byte, error) {
+	reqURL := a.qrServiceURL + "/qr.png?content=" + url.QueryEscape(content) + "&size=" + strconv.Itoa(size)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("qr-service returned %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // ngrokTunnelsResponse is the shape of ngrok's local inspection API
