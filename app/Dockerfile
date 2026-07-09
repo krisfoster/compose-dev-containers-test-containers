@@ -24,10 +24,8 @@
 
 FROM dhi.io/golang:1.25-alpine-dev AS build
 WORKDIR /src
-COPY app/go.mod app/go.sum ./
-RUN go mod download
 COPY app/ .
-RUN CGO_ENABLED=0 go build -o /out/app .
+RUN CGO_ENABLED=0 go build -mod=vendor -o /out/app .
 # Create an empty /repo directory so the final image has a mount point for
 # the host .git directory. dhi.io/static has no shell, so we make it here.
 RUN mkdir /out/repo
