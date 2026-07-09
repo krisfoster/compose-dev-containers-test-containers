@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"crossywhale/app/internal/leaderboard"
@@ -17,7 +16,8 @@ const testSecret = "test-leaderboard-secret"
 
 func newTestHandler() (*leaderboard.Handler, *leaderboardtest.FakeScoreStore) {
 	store := &leaderboardtest.FakeScoreStore{}
-	return leaderboard.NewHandler(store, testSecret), store
+	notifier := &leaderboardtest.FakeScoreNotifier{}
+	return leaderboard.NewHandler(store, testSecret, notifier), store
 }
 
 func doRequest(h *leaderboard.Handler, method, credential string, body any) *httptest.ResponseRecorder {
@@ -32,36 +32,6 @@ func doRequest(h *leaderboard.Handler, method, credential string, body any) *htt
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
-}
-
-// doGetRequest issues a GET, optionally with a raw query string (e.g. "limit=2"), and
-// deliberately carries no credential header — the read endpoint requires none (FR-013).
-func doGetRequest(h *leaderboard.Handler, rawQuery string) *httptest.ResponseRecorder {
-	target := "/api/leaderboard/scores"
-	if rawQuery != "" {
-		target += "?" + rawQuery
-	}
-	req := httptest.NewRequest(http.MethodGet, target, nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec
-}
-
-type standingsResponse struct {
-	Standings []struct {
-		Rank  int    `json:"rank"`
-		Name  string `json:"name"`
-		Score int    `json:"score"`
-	} `json:"standings"`
-}
-
-func decodeStandings(t *testing.T, rec *httptest.ResponseRecorder) standingsResponse {
-	t.Helper()
-	var resp standingsResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode standings response: %v, body: %s", err, rec.Body.String())
-	}
-	return resp
 }
 
 // US3: a valid request is accepted and recorded exactly once.
@@ -200,8 +170,7 @@ func TestHandlerAcceptsNameAtLengthLimitAndTrimsWhitespace(t *testing.T) {
 	}
 }
 
-// GET is now a supported method (the read endpoint added by
-// specs/004-leaderboard-page); only genuinely unsupported verbs are rejected.
+// Only POST is supported; all other verbs are rejected.
 func TestHandlerRejectsUnsupportedMethod(t *testing.T) {
 	h, _ := newTestHandler()
 
@@ -212,95 +181,11 @@ func TestHandlerRejectsUnsupportedMethod(t *testing.T) {
 	}
 }
 
-// FR-008 (specs/004-leaderboard-page/spec.md): an empty store yields an empty,
-// non-null standings list, not an error.
-func TestHandlerListReturnsEmptyStandingsWhenStoreEmpty(t *testing.T) {
-	h, _ := newTestHandler()
-
-	rec := doGetRequest(h, "")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"standings":[]`) {
-		t.Fatalf("body = %q, want an explicit empty array, not null", rec.Body.String())
-	}
-}
-
-// FR-002, FR-003: standings are ranked highest score first, with 1-based rank.
-func TestHandlerListReturnsRankedStandings(t *testing.T) {
-	h, store := newTestHandler()
-	store.Entries = []leaderboard.Entry{
-		{Name: "low", Score: 5},
-		{Name: "high", Score: 50},
-		{Name: "mid", Score: 20},
-	}
-
-	resp := decodeStandings(t, doGetRequest(h, ""))
-
-	if len(resp.Standings) != 3 {
-		t.Fatalf("got %d standings, want 3: %+v", len(resp.Standings), resp.Standings)
-	}
-	wantOrder := []string{"high", "mid", "low"}
-	for i, name := range wantOrder {
-		if resp.Standings[i].Name != name || resp.Standings[i].Rank != i+1 {
-			t.Fatalf("standings[%d] = %+v, want name %q at rank %d", i, resp.Standings[i], name, i+1)
-		}
-	}
-}
-
-// FR-004: an out-of-range limit is clamped, never rejected.
-func TestHandlerListClampsOutOfRangeLimit(t *testing.T) {
-	h, store := newTestHandler()
-	for i := 0; i < 60; i++ {
-		store.Entries = append(store.Entries, leaderboard.Entry{Name: "p", Score: i})
-	}
-
-	tooHigh := decodeStandings(t, doGetRequest(h, "limit=1000"))
-	if len(tooHigh.Standings) != 50 {
-		t.Fatalf("limit=1000 returned %d standings, want clamped to 50", len(tooHigh.Standings))
-	}
-
-	tooLow := decodeStandings(t, doGetRequest(h, "limit=0"))
-	if len(tooLow.Standings) != 1 {
-		t.Fatalf("limit=0 returned %d standings, want clamped to 1", len(tooLow.Standings))
-	}
-
-	invalid := decodeStandings(t, doGetRequest(h, "limit=not-a-number"))
-	if len(invalid.Standings) != 20 {
-		t.Fatalf("limit=not-a-number returned %d standings, want the default of 20", len(invalid.Standings))
-	}
-}
-
-// FR-013: the read endpoint requires no credential — doGetRequest never sends one, so
-// a 200 here already proves this, but assert explicitly for clarity.
-func TestHandlerListRequiresNoCredential(t *testing.T) {
-	h, store := newTestHandler()
-	store.Entries = []leaderboard.Entry{{Name: "kris", Score: 1}}
-
-	rec := doGetRequest(h, "")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d (no credential should be required)", rec.Code, http.StatusOK)
-	}
-}
-
-func TestHandlerListReturns500WhenStoreTopFails(t *testing.T) {
-	store := &leaderboardtest.FakeScoreStore{TopErr: errors.New("intentional test failure")}
-	h := leaderboard.NewHandler(store, testSecret)
-
-	rec := doGetRequest(h, "")
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
-	}
-}
-
 // A misconfigured deployment (empty LEADERBOARD_API_SECRET) must fail closed rather
 // than accepting an empty credential header as a match.
 func TestHandlerFailsClosedWithEmptyConfiguredSecret(t *testing.T) {
 	store := &leaderboardtest.FakeScoreStore{}
-	h := leaderboard.NewHandler(store, "")
+	h := leaderboard.NewHandler(store, "", &leaderboardtest.FakeScoreNotifier{})
 
 	rec := doRequest(h, http.MethodPost, "", map[string]any{"name": "kris", "score": 1})
 
@@ -314,7 +199,7 @@ func TestHandlerFailsClosedWithEmptyConfiguredSecret(t *testing.T) {
 
 func TestHandlerReturns500WhenStoreWriteFails(t *testing.T) {
 	store := &leaderboardtest.FakeScoreStore{WriteErr: errors.New("intentional test failure")}
-	h := leaderboard.NewHandler(store, testSecret)
+	h := leaderboard.NewHandler(store, testSecret, &leaderboardtest.FakeScoreNotifier{})
 
 	rec := doRequest(h, http.MethodPost, testSecret, map[string]any{"name": "kris", "score": 1})
 

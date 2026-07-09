@@ -36,4 +36,5 @@ COPY --from=build /out/app /app
 COPY --from=build /out/repo /repo
 COPY frontend/game /frontend
 COPY container-obstacles.gif /frontend/container-obstacles.gif
+COPY frontend/leaderboard /leaderboard-assets
 ENTRYPOINT ["/app"]

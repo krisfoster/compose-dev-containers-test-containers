@@ -57,8 +57,20 @@ services:
       - FRONTEND_DIR=/frontend
       - APP_WEB_PORT=8080
       - APP_GATED_PORT=8081
-    # ports: publishes container port 8080 to the host, making the app reachable
-    # in a browser at http://localhost:8080. WEB_PORT can be overridden via .env.
+      - LEADERBOARD_ASSETS_DIR=/leaderboard-assets
+      # COMMITS_SERVICE_URL is the browser-visible base URL of the commits microservice.
+      # With nginx as the single ingress (014-nginx-front-door), the browser connects
+      # to http://localhost (port 80) and nginx proxies /commits/* to commits-service.
+      # Override in .env for demo environments (e.g. COMMITS_SERVICE_URL=https://demo.ngrok.app).
+      - COMMITS_SERVICE_URL=${COMMITS_SERVICE_URL:-http://localhost}
+      # SCORES_SERVICE_URL is the browser-visible base URL of the scores microservice.
+      # With nginx as the single ingress (014-nginx-front-door), the browser connects
+      # to http://localhost (port 80) and nginx proxies /scores/* to scores-service.
+      # Override in .env for demo environments (e.g. SCORES_SERVICE_URL=https://demo.ngrok.app).
+      - SCORES_SERVICE_URL=${SCORES_SERVICE_URL:-http://localhost}
+    # ports: publishes container port 8080 to the host for direct developer access
+    # (e.g. debugging without nginx in the path). The primary public entry point is
+    # nginx on port 80. WEB_PORT can be overridden via .env.
     ports:
       - "${WEB_PORT:-8080}:8080"
     depends_on:
@@ -73,8 +85,71 @@ services:
       ngrok:
         condition: service_healthy
         required: false
+
+  # commits-service — dedicated microservice that serves recent git commits as
+  # structured JSON (GET /commits) and a Server-Sent Events stream
+  # (GET /commits/stream). It mounts the same read-only .git volume as the
+  # app service previously did, reads up to 20 commits from HEAD, and serves
+  # no HTML. In normal operation the browser reaches it via nginx at /commits;
+  # port 8082 is also published directly for developer access.
+  commits-service:
+    build:
+      context: commits-service
+      dockerfile: Dockerfile
+    image: whale-runner-commits:local
+    environment:
+      - GIT_REPO_PATH=/repo
+      - COMMITS_LISTEN_ADDR=:8082
+    ports:
+      - "8082:8082"
     volumes:
       - ./.git:/repo/.git:ro
+
+  # scores-service — dedicated microservice that serves leaderboard standings as
+  # structured JSON (GET /scores) and a Server-Sent Events stream
+  # (GET /scores/stream). It reads from the leaderboard:scores Redis Stream and
+  # subscribes to the leaderboard:score-updated pub/sub channel for live updates.
+  # In normal operation the browser reaches it via nginx at /scores; port 8083
+  # is also published directly for developer access.
+  scores-service:
+    build:
+      context: scores-service
+      dockerfile: Dockerfile
+    image: whale-runner-scores:local
+    environment:
+      - REDIS_ADDR=redis:6379
+      - SCORES_LISTEN_ADDR=:8083
+      - SCORES_LIMIT=${SCORES_LIMIT:-10}
+      - REDIS_PUBSUB_CHANNEL=leaderboard:score-updated
+    ports:
+      - "8083:8083"
+    depends_on:
+      redis:
+        condition: service_started
+
+  # nginx — single public ingress for the demo stack (014-nginx-front-door).
+  # Serves game static assets and leaderboard component bundles directly from
+  # files copied into the image at build time, and reverse-proxies all dynamic
+  # paths to the appropriate Go service or microservice. ngrok tunnels to this
+  # service rather than to app:8081 directly, so all external traffic — including
+  # QR-gated player phone access — enters through a single port.
+  #
+  # Build context is the repo root so the Dockerfile can COPY frontend/ alongside
+  # the nginx config. See nginx/Dockerfile and nginx/nginx.conf for details.
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    image: whale-runner-nginx:local
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      app:
+        condition: service_started
+      scores-service:
+        condition: service_started
+      commits-service:
+        condition: service_started
 
   # ngrok — creates a secure public tunnel so players can reach the game over the
   # internet using a QR code. ngrok is optional: it only starts when you pass
@@ -89,9 +164,9 @@ services:
     profiles:
       - public
     restart: unless-stopped
-    # ngrok.yml defines the endpoint: static domain and upstream URL (app:8081,
-    # the gated port on the Compose network). The authtoken comes from .env so
-    # it stays out of the config file and out of version control.
+    # ngrok.yml defines the endpoint: static domain and upstream URL (nginx:80,
+    # the single public ingress on the Compose network). The authtoken comes from
+    # .env so it stays out of the config file and out of version control.
     volumes:
       - ./ngrok.yml:/etc/ngrok/ngrok.yml
     command: ["start", "--all", "--config=/etc/ngrok/ngrok.yml"]

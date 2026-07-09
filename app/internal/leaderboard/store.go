@@ -7,9 +7,6 @@ package leaderboard
 
 import (
 	"context"
-	"fmt"
-	"sort"
-	"strconv"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -46,35 +43,6 @@ type ScoreStore interface {
 	// existing entry — every call adds exactly one new record, even if an entry with
 	// the same name already exists.
 	Write(ctx context.Context, entry Entry) error
-
-	// Top returns up to limit Leaderboard Entries, ranked by score descending with
-	// ties broken by most-recently-written first (specs/004-leaderboard-page/spec.md
-	// FR-002 through FR-004). Returns an empty, non-nil slice if no entries exist.
-	Top(ctx context.Context, limit int) ([]Entry, error)
-}
-
-// RankTop sorts entries — assumed to be in oldest-to-newest write order — by score
-// descending, breaking ties by most-recently-written first, and truncates to at most
-// limit results. Shared by RedisScoreStore.Top and the in-memory fake in
-// leaderboardtest so both rank identically (research.md §1).
-func RankTop(entries []Entry, limit int) []Entry {
-	ranked := make([]Entry, len(entries))
-	copy(ranked, entries)
-
-	// Reverse to newest-first so a stable sort-by-score preserves "most recent wins
-	// ties" without needing to track each entry's original stream position.
-	for i, j := 0, len(ranked)-1; i < j; i, j = i+1, j-1 {
-		ranked[i], ranked[j] = ranked[j], ranked[i]
-	}
-	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
-
-	if limit < 0 {
-		limit = 0
-	}
-	if limit < len(ranked) {
-		ranked = ranked[:limit]
-	}
-	return ranked
 }
 
 // RedisScoreStore is the production ScoreStore, backed by a Redis Stream.
@@ -98,26 +66,18 @@ func (s *RedisScoreStore) Write(ctx context.Context, entry Entry) error {
 	}).Err()
 }
 
-// Top implements ScoreStore. It reads the entire stream (booth-scale — at most a few
-// hundred entries per event, plan.md Scale/Scope) rather than maintaining a separate
-// ranked structure, per research.md §1.
-func (s *RedisScoreStore) Top(ctx context.Context, limit int) ([]Entry, error) {
-	msgs, err := s.client.XRange(ctx, scoresStreamKey, "-", "+").Result()
-	if err != nil {
-		return nil, err
-	}
+// scoresNotifyChannel is the Redis pub/sub channel published to after each successful
+// score write so the scores-service can push SSE updates to connected clients.
+const scoresNotifyChannel = "leaderboard:score-updated"
 
-	// msgs is oldest-to-newest (XRange ascending), matching RankTop's expected input.
-	entries := make([]Entry, 0, len(msgs))
-	for _, msg := range msgs {
-		name, _ := msg.Values["name"].(string)
-		scoreStr, _ := msg.Values["score"].(string)
-		score, err := strconv.Atoi(scoreStr)
-		if err != nil {
-			return nil, fmt.Errorf("leaderboard: malformed score in stream entry %s: %w", msg.ID, err)
-		}
-		entries = append(entries, Entry{Name: name, Score: score})
-	}
+// ScoreNotifier publishes a score-change notification. Kept as a separate interface
+// from ScoreStore so handler tests can stub notification independently from writes.
+type ScoreNotifier interface {
+	Notify(ctx context.Context) error
+}
 
-	return RankTop(entries, limit), nil
+// Notify implements ScoreNotifier on RedisScoreStore. A missed notification delays the
+// SSE update on the scores-service but does not affect score recording.
+func (s *RedisScoreStore) Notify(ctx context.Context) error {
+	return s.client.Publish(ctx, scoresNotifyChannel, "").Err()
 }

@@ -1,0 +1,170 @@
+openapi: 3.0.3
+info:
+  title: Crossy Whale Scores Service API
+  description: >
+    Dedicated microservice that surfaces leaderboard standings for the Crossy Whale leaderboard page.
+    Provides a REST endpoint (GET /scores) for request/response access and a Server-Sent Events
+    endpoint (GET /scores/stream) for push-based delivery to the leaderboard React component.
+    The service serves no HTML; all responses are structured data.
+    Standings show each player's best (highest) score only — one row per player.
+    See scores-sse-contract.md for the SSE stream format.
+  version: "1.0.0"
+servers:
+  - description: Local (docker compose up — default published port)
+    url: http://localhost:8083
+paths:
+  /scores:
+    get:
+      operationId: listStandings
+      summary: Return the current leaderboard standings, one entry per player (best score).
+      description: >
+        Returns a JSON object containing a ranked standings list. Each player appears once,
+        showing their highest submitted score. The list is ordered by score descending and
+        bounded by the SCORES_LIMIT environment variable (default 10).
+        Returns an empty standings array (not an error) when no scores exist.
+        CORS headers are set to allow cross-origin access from the leaderboard page.
+      responses:
+        "200":
+          description: >
+            Standings returned successfully. The standings array may be empty when no scores
+            have been recorded — this is not an error condition.
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+              description: Wildcard CORS header present on all 200 responses.
+            Content-Type:
+              schema:
+                type: string
+                example: "application/json; charset=utf-8"
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-store"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandingsResponse'
+              examples:
+                withStandings:
+                  summary: Scores have been submitted
+                  value:
+                    standings:
+                      - rank: 1
+                        name: "Alice"
+                        score: 42
+                      - rank: 2
+                        name: "Bob"
+                        score: 37
+                      - rank: 3
+                        name: "Carol"
+                        score: 21
+                empty:
+                  summary: No scores yet
+                  value:
+                    standings: []
+        "503":
+          description: Redis is unavailable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "standings unavailable"
+    options:
+      operationId: corsPreflightScores
+      summary: CORS preflight for /scores
+      responses:
+        "204":
+          description: CORS preflight accepted.
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: "GET, OPTIONS"
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: "Content-Type"
+  /scores/stream:
+    get:
+      operationId: streamStandings
+      summary: SSE stream that pushes updated standings on each score change.
+      description: >
+        Opens a persistent HTTP/1.1 Server-Sent Events connection. On connect, the server
+        immediately emits one "standings" event with the current standings. It then emits
+        a new "standings" event each time a score-change notification is received from Redis
+        pub/sub. The connection stays open until the client disconnects.
+        See scores-sse-contract.md for the full wire format.
+      responses:
+        "200":
+          description: SSE stream established.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: "text/event-stream; charset=utf-8"
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-cache"
+            Connection:
+              schema:
+                type: string
+                example: "keep-alive"
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >
+                  A stream of SSE events. Each event has type "standings" and
+                  carries a JSON-encoded StandingsResponse as its data field.
+                  See scores-sse-contract.md for examples.
+        "500":
+          description: Streaming not supported by the server (should not occur in practice).
+    options:
+      operationId: corsPreflightStream
+      summary: CORS preflight for /scores/stream
+      responses:
+        "204":
+          description: CORS preflight accepted.
+components:
+  schemas:
+    Standing:
+      type: object
+      required: [rank, name, score]
+      properties:
+        rank:
+          type: integer
+          description: 1-based rank position. Ranks are sequential with no gaps.
+          example: 1
+        name:
+          type: string
+          description: Player name as submitted.
+          example: "Alice"
+        score:
+          type: integer
+          description: Player's best (highest) submitted score.
+          example: 42
+    StandingsResponse:
+      type: object
+      required: [standings]
+      properties:
+        standings:
+          type: array
+          description: >
+            Ranked standings list, ordered by score descending. Each player appears at most once,
+            showing their best score. Empty array when no scores have been submitted.
+          items:
+            $ref: '#/components/schemas/Standing'

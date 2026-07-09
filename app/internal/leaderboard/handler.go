@@ -3,8 +3,8 @@ package leaderboard
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -17,25 +17,17 @@ const CredentialHeader = "X-Leaderboard-Token"
 // leading/trailing whitespace (FR-003).
 const MaxNameLength = 32
 
-// defaultStandingsLimit and maxStandingsLimit bound the GET response size (FR-004 of
-// specs/004-leaderboard-page/spec.md) — defaultStandingsLimit applies when the
-// `limit` query parameter is absent or invalid; maxStandingsLimit is a hard ceiling
-// regardless of what a caller requests.
-const (
-	defaultStandingsLimit = 20
-	maxStandingsLimit     = 50
-)
-
 // Handler serves both GET and POST on /api/leaderboard/scores.
 type Handler struct {
-	store  ScoreStore
-	secret string
+	store    ScoreStore
+	secret   string
+	notifier ScoreNotifier
 }
 
-// NewHandler builds a Handler backed by store and secret (the configured
-// LEADERBOARD_API_SECRET).
-func NewHandler(store ScoreStore, secret string) *Handler {
-	return &Handler{store: store, secret: secret}
+// NewHandler builds a Handler backed by store, secret (the configured
+// LEADERBOARD_API_SECRET), and notifier (publishes score-change events).
+func NewHandler(store ScoreStore, secret string, notifier ScoreNotifier) *Handler {
+	return &Handler{store: store, secret: secret, notifier: notifier}
 }
 
 type submitScoreRequest struct {
@@ -47,29 +39,16 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-type standing struct {
-	Rank  int    `json:"rank"`
-	Name  string `json:"name"`
-	Score int    `json:"score"`
-}
-
-type standingsResponse struct {
-	Standings []standing `json:"standings"`
-}
-
 // ServeHTTP implements http.Handler for /api/leaderboard/scores: POST submits a score
-// (FR-006 through FR-013 of specs/003-leaderboard-score-submission/spec.md) and GET
-// retrieves current standings (FR-002 through FR-005, FR-012, FR-013 of
-// specs/004-leaderboard-page/spec.md) — see
-// specs/004-leaderboard-page/contracts/leaderboard-openapi.yaml for the full contract.
+// (FR-006 through FR-013 of specs/003-leaderboard-score-submission/spec.md).
+// Score reads are served by the scores-service microservice
+// (013-leaderboard-scores-microservice); GET is no longer handled here.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		h.serveSubmit(w, r)
-	case http.MethodGet:
-		h.serveList(w, r)
 	default:
-		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -113,42 +92,13 @@ func (h *Handler) serveSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.notifier.Notify(r.Context()); err != nil {
+		log.Printf("leaderboard: score notify: %v", err)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]bool{"recorded": true})
-}
-
-// serveList handles GET: no credential is required (FR-013). An out-of-range or
-// missing/invalid `limit` query parameter is clamped rather than rejected, so this
-// endpoint never errors on its own input (FR-004).
-func (h *Handler) serveList(w http.ResponseWriter, r *http.Request) {
-	limit := defaultStandingsLimit
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil {
-			limit = parsed
-		}
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > maxStandingsLimit {
-		limit = maxStandingsLimit
-	}
-
-	entries, err := h.store.Top(r.Context(), limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load standings")
-		return
-	}
-
-	standings := make([]standing, len(entries))
-	for i, entry := range entries {
-		standings[i] = standing{Rank: i + 1, Name: entry.Name, Score: entry.Score}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(standingsResponse{Standings: standings})
 }
 
 // validCredential reports whether got matches want, using a constant-time comparison

@@ -34,7 +34,7 @@ Start everything:
 docker compose up -d
 ```
 
-Open <http://localhost:8080/>. You'll see a landing page linking to `/play` (the game), `/host` (the QR code presenter view), and `/leaderboard` (the wall display). One command started three services (Redis, the Go app, and optionally ngrok) and wired them together.
+Open <http://localhost/>. You'll see a landing page linking to `/play` (the game), `/host` (the QR code presenter view), and `/leaderboard` (the wall display). One command started five services (Redis, the Go app, two microservices, nginx, and optionally ngrok) and wired them together.
 
 Stop with:
 
@@ -52,13 +52,16 @@ Open [`docker-compose.yml`](docker-compose.yml).
 
 **What Docker Compose does**: a single `docker-compose.yml` file declares every service your application needs: what image to use, what ports to expose, what environment variables to set, and how services depend on each other. `docker compose up` reads that file and starts everything.
 
-**The three services**: this project defines `redis`, `app`, and `ngrok` under the top-level `services:` key:
+**The five services**: this project defines `redis`, `app`, `commits-service`, `scores-service`, `nginx`, and `ngrok` under the top-level `services:` key:
 
 ```yaml
 services:
-  redis:   # in-memory data store
-  app:     # Go backend - built from source
-  ngrok:   # public tunnel (optional)
+  redis:            # in-memory data store (leaderboard + QR gate state)
+  app:              # Go backend - built from source
+  commits-service:  # microservice: serves recent git commits as JSON + SSE
+  scores-service:   # microservice: serves leaderboard standings as JSON + SSE
+  nginx:            # reverse proxy + static file server (single public ingress)
+  ngrok:            # public tunnel (optional, --profile public)
 ```
 
 **How services discover each other**: the Go app needs to know where Redis is. It reads that from the `REDIS_ADDR` environment variable. Look at how that variable is set in the `app` service:
@@ -70,16 +73,20 @@ environment:
 
 The hostname `redis` is not something you configured anywhere. It's the name of the `redis` service in this file. Docker Compose automatically provides DNS so every service can reach any other by its service name. The app just reads `REDIS_ADDR`, and Docker resolves `redis` to the right container at runtime. No hard-coded IP addresses needed.
 
-**`expose:` vs `ports:`**: these two keys control who can reach a port. Redis only needs to be reachable within the stack. The app talks to it, but there's no reason to expose it to your laptop. The app is the service users browse to, so it needs a port published to the host.
+**`expose:` vs `ports:`**: these two keys control who can reach a port. Redis only needs to be reachable within the stack — no reason to expose it to your laptop. nginx is the single public entry point, so it's the only service that needs a port published to the host. The Go app still publishes port 8080 for direct developer access, but regular users reach everything through nginx on port 80.
 
 ```yaml
 redis:
   expose:
     - "6379"    # reachable by other services on the Compose network, NOT the host machine
 
+nginx:
+  ports:
+    - "80:80"   # the single public entry point - open http://localhost in a browser
+
 app:
   ports:
-    - "8080:8080"   # published to the host - open http://localhost:8080 in a browser
+    - "8080:8080"   # developer access only; nginx proxies to this internally
 ```
 
 **Environment variables as configuration**: the app has no config files. Every runtime setting is injected via environment variables. The `${VAR:-default}` syntax means "use this value if the variable isn't set in `.env` or the shell", so the app works out of the box without any setup:
@@ -90,7 +97,7 @@ environment:
   - QR_WINDOW_TTL=${QR_WINDOW_TTL:-15m}                             # how long a QR code stays valid
 ```
 
-**Profiles for optional services**: for local development you don't need a public URL. Just open `localhost:8080` directly. ngrok is only needed when you want to share the game over the internet (e.g. so booth attendees can scan a QR code and play on their phones). The `profiles: [public]` key keeps ngrok out of the default `docker compose up` and only starts it when you explicitly opt in:
+**Profiles for optional services**: for local development you don't need a public URL. Just open `localhost` directly. ngrok is only needed when you want to share the game over the internet (e.g. so booth attendees can scan a QR code and play on their phones). The `profiles: [public]` key keeps ngrok out of the default `docker compose up` and only starts it when you explicitly opt in:
 
 ```yaml
 ngrok:
@@ -227,12 +234,12 @@ ngrok is a tunneling service. It creates a public HTTPS URL on the internet and 
 cp .env.example .env           # once
 # edit .env and set NGROK_AUTHTOKEN=<your token>
 docker compose --profile public up -d
-open http://localhost:8080/host   # shows the current QR code, with a button to rotate it
+open http://localhost/host   # shows the current QR code, with a button to rotate it
 ```
 
 **Inspecting the tunnel**: while the `public` profile is running, ngrok's local web inspector is at <http://localhost:4040>. It shows the current public URL and a live log of incoming requests.
 
-The public URL only serves the game to visitors who have scanned the current QR code. Anyone else sees a "scan the QR code to play" message. Display `/host` on a presenter-only screen: the QR code and its "Rotate" button are not exposed on the public endpoint. Local play at `localhost:8080/play` keeps working even if the tunnel is down.
+The public URL only serves the game to visitors who have scanned the current QR code. Anyone else sees a "scan the QR code to play" message. Display `/host` on a presenter-only screen: the QR code and its "Rotate" button are not exposed on the public endpoint — nginx routes `/play` to the gated port but has no public `/host` route. Local play at `localhost/play` keeps working even if the tunnel is down.
 
 ---
 
@@ -240,13 +247,14 @@ The public URL only serves the game to visitors who have scanned the current QR 
 
 Before playing, each player enters a display name. On death, their score is shown on a "Game Over" screen and submitted to a Redis-backed leaderboard automatically. A "Replay" button restarts immediately, reusing the same name. Score writes are protected by `LEADERBOARD_API_SECRET` (set in `.env`, injected into the served game page automatically), so only the game client itself can record a score.
 
-Current standings are at `http://localhost:8080/leaderboard`, a wall/booth display that refreshes automatically as new scores come in.
+Current standings are at `http://localhost/leaderboard`, a wall/booth display that refreshes automatically as new scores come in via a live Server-Sent Events connection to the scores microservice.
 
 ---
 
 ## Troubleshooting
 
-- **Port 8080 already in use**: `docker compose up` fails with "port is already allocated". Stop whatever's using it, or set a different `WEB_PORT` in `.env` and retry.
+- **Port 80 already in use**: `docker compose up` fails with "port is already allocated". Stop whatever's using it, or set a different `NGINX_PORT` in `.env` and retry (e.g. `NGINX_PORT=8090`).
+- **Port 8080 already in use**: the Go app also publishes 8080 for direct developer access. Stop whatever's using it, or set a different `WEB_PORT` in `.env`.
 - **`/qr.png` returns 503**: no QR code has been generated yet (visit `/host` first) or, once public access is enabled, the public URL isn't available yet. Check `docker compose --profile public ps` and `NGROK_AUTHTOKEN` in `.env`.
 - **Scanned QR code doesn't work anymore**: it may have expired (default 15 minutes, `QR_WINDOW_TTL` in `.env`) or been rotated from `/host`. Get the current code and re-scan.
 - **Redis errors (`/host` → 503, leaderboard → "failed to load standings", `DENIED Redis is running in protected mode`)**: the Docker Hardened Images Redis ships with `protected-mode` **on**, which rejects connections from other containers. This project disables it in `docker-compose.yml`. If you see these errors, that override is missing or was edited out. Full explanation: [`specs/005-dhi-image-migration/contracts/image-inventory.md`](specs/005-dhi-image-migration/contracts/image-inventory.md#known-configuration-difference-dhi-redis-enables-protected-mode).

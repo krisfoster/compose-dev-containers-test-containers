@@ -67,7 +67,7 @@ func newTestApp(t *testing.T) (*App, *gatetest.FakeWindowStore) {
 		ngrokAPIURL:        ngrokServer.URL,
 		qrWindowTTL:        time.Minute,
 		httpClient:         ngrokServer.Client(),
-		leaderboardHandler: leaderboard.NewHandler(scoreStore, testLeaderboardSecret),
+		leaderboardHandler: leaderboard.NewHandler(scoreStore, testLeaderboardSecret, &leaderboardtest.FakeScoreNotifier{}),
 		leaderboardSecret:  testLeaderboardSecret,
 	}
 	return app, store
@@ -237,6 +237,30 @@ func TestHandleRootServesGettingStartedPage(t *testing.T) {
 	}
 }
 
+// The old /api/commits endpoint was removed when the commits microservice was
+// introduced (012-git-commits-microservice). The ungated mux must return 404.
+// The gated mux's catch-all "/" is gated, so an unauthenticated request returns
+// 403 from the gate middleware — this also confirms no dedicated commits route exists.
+func TestOldCommitsEndpointRemoved(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commits", nil)
+	rec := httptest.NewRecorder()
+	app.ungatedMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("ungated mux /api/commits: got %d, want 404", rec.Code)
+	}
+
+	// On the gated mux, the gate catch-all returns 403 (no grant cookie) before
+	// any route lookup — verifying there is no dedicated commits route.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/commits", nil)
+	rec2 := httptest.NewRecorder()
+	app.gatedMux().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusForbidden {
+		t.Errorf("gated mux /api/commits without grant: got %d, want 403", rec2.Code)
+	}
+}
+
 // Non-root paths (game assets like script.js) must still fall through to the static
 // file server, not the getting-started page.
 func TestHandleRootFallsThroughToStaticAssets(t *testing.T) {
@@ -356,7 +380,7 @@ func TestHandleLeaderboardPageOnBothListeners(t *testing.T) {
 
 // The page's own script (not exercised by this Go test) is what actually fetches and
 // polls standings; this only asserts the served markup wires up the expected pieces.
-func TestHandleLeaderboardPageWiresUpFetchAndPolling(t *testing.T) {
+func TestHandleLeaderboardPageMountsScoresComponent(t *testing.T) {
 	app, _ := newTestApp(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/leaderboard", nil)
@@ -364,11 +388,14 @@ func TestHandleLeaderboardPageWiresUpFetchAndPolling(t *testing.T) {
 	app.ungatedMux().ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `fetch('/api/leaderboard/scores')`) {
-		t.Fatal("leaderboard page missing the standings fetch() call")
+	if !strings.Contains(body, `id="scores-root"`) {
+		t.Fatal("leaderboard page missing scores-root mount point")
 	}
-	if !strings.Contains(body, "setInterval(refresh") {
-		t.Fatal("leaderboard page missing the recurring refresh interval")
+	if !strings.Contains(body, `ScoresComponent`) {
+		t.Fatal("leaderboard page missing ScoresComponent mount")
+	}
+	if !strings.Contains(body, `scores-component.js`) {
+		t.Fatal("leaderboard page missing scores-component.js script")
 	}
 }
 
@@ -488,7 +515,7 @@ func appWithErroringStore(t *testing.T) *App {
 		ngrokAPIURL:        "http://127.0.0.1:1/unreachable",
 		qrWindowTTL:        time.Minute,
 		httpClient:         &http.Client{Timeout: 200 * time.Millisecond},
-		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret),
+		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret, &leaderboardtest.FakeScoreNotifier{}),
 	}
 }
 
@@ -529,7 +556,7 @@ func TestHandleHostWhenActivateFails(t *testing.T) {
 		store:              store,
 		gate:               gate.NewGate(store, gate.NewSigner([]byte("test-secret"), time.Hour)),
 		frontendDir:        t.TempDir(),
-		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret),
+		leaderboardHandler: leaderboard.NewHandler(&leaderboardtest.FakeScoreStore{}, testLeaderboardSecret, &leaderboardtest.FakeScoreNotifier{}),
 	}
 	req := httptest.NewRequest(http.MethodGet, "/host", nil)
 	rec := httptest.NewRecorder()

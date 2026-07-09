@@ -1,0 +1,181 @@
+openapi: 3.0.3
+info:
+  title: Crossy Whale Commits Service API
+  description: >
+    Dedicated microservice that surfaces recent git commits for the Crossy Whale leaderboard.
+    Provides a REST endpoint (GET /commits) for request/response polling and a Server-Sent Events
+    endpoint (GET /commits/stream) for push-based delivery to the leaderboard React component.
+    The service serves no HTML; all responses are structured data.
+    See commits-sse-contract.md for the SSE stream format.
+  version: "1.0.0"
+servers:
+  - description: Local (docker compose up — default published port)
+    url: http://localhost:8082
+paths:
+  /commits:
+    get:
+      operationId: listCommits
+      summary: Return the most recent git commits, newest first.
+      description: >
+        Returns a JSON object containing a bounded list of CommitEntry records derived from the
+        mounted .git directory at HEAD. Returns an empty commits array (not an error) when the
+        repository has no commits. Returns HTTP 503 when the git directory is unavailable.
+        CORS headers are set to allow cross-origin access from the leaderboard page.
+      responses:
+        "200":
+          description: >
+            Commit feed returned successfully. The commits array may be empty when the repository
+            has no commits — this is not an error condition.
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+              description: Wildcard CORS header present on all 200 responses.
+            Content-Type:
+              schema:
+                type: string
+                example: "application/json; charset=utf-8"
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-store"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitFeed'
+              examples:
+                withCommits:
+                  summary: Repository has commits
+                  value:
+                    commits:
+                      - hash: "a2c6757"
+                        author: "Kris Foster"
+                        date: "2026-07-07 22:15"
+                        message: "Leaderboard redesign, ngrok fix, and mobile camera improvements"
+                      - hash: "84cc9c6"
+                        author: "Kris Foster"
+                        date: "2026-07-07 18:42"
+                        message: "Improve README readability and completeness"
+                empty:
+                  summary: Repository has no commits
+                  value:
+                    commits: []
+        "503":
+          description: >
+            Git repository unavailable — the .git directory could not be opened or HEAD could not
+            be resolved. The leaderboard component treats this as a transient error and retains its
+            last known state.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "git repo unavailable"
+    options:
+      operationId: preflight
+      summary: CORS preflight
+      description: Returns CORS headers for browser preflight requests.
+      responses:
+        "204":
+          description: Preflight accepted.
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: "GET, OPTIONS"
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: "Content-Type"
+
+  /commits/stream:
+    get:
+      operationId: streamCommits
+      summary: Server-Sent Events stream of commit feed updates.
+      description: >
+        Opens a persistent HTTP connection that emits Server-Sent Events. On connection, the
+        current commit feed is sent immediately as an event named "commits". The feed is then
+        re-broadcast every 30 seconds. The browser's EventSource API reconnects automatically if
+        the connection is closed.
+
+        See commits-sse-contract.md for the exact event wire format.
+
+        CORS headers are set on the response to allow cross-origin EventSource connections.
+      responses:
+        "200":
+          description: SSE stream established.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: "text/event-stream; charset=utf-8"
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-cache"
+            Connection:
+              schema:
+                type: string
+                example: "keep-alive"
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >
+                  A series of SSE events. Each event has `event: commits` and `data` set to
+                  a JSON-encoded CommitFeed object. See commits-sse-contract.md for examples.
+
+components:
+  schemas:
+    CommitEntry:
+      type: object
+      required:
+        - hash
+        - author
+        - date
+        - message
+      properties:
+        hash:
+          type: string
+          minLength: 7
+          maxLength: 7
+          description: Short-form (7-character) hex SHA-1 commit hash.
+          example: "a2c6757"
+        author:
+          type: string
+          maxLength: 64
+          description: Commit author display name, truncated to 64 characters.
+          example: "Kris Foster"
+        date:
+          type: string
+          description: Commit author timestamp in UTC, formatted as "YYYY-MM-DD HH:MM".
+          example: "2026-07-07 22:15"
+        message:
+          type: string
+          description: >
+            Subject line of the commit message (first line before any newline). May be empty
+            for commits with blank subjects, but in practice non-empty for all real commits.
+          example: "Leaderboard redesign, ngrok fix, and mobile camera improvements"
+
+    CommitFeed:
+      type: object
+      required:
+        - commits
+      properties:
+        commits:
+          type: array
+          maxItems: 20
+          description: >
+            Up to 20 most recent commits, newest first. Empty array when the repository has no
+            commits — this is a valid non-error state that the leaderboard component renders as
+            the "no commits" empty-state message.
+          items:
+            $ref: '#/components/schemas/CommitEntry'

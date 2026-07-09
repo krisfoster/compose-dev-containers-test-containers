@@ -20,8 +20,6 @@ import (
 	"path/filepath"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/redis/go-redis/v9"
 
 	"crossywhale/app/internal/gate"
@@ -44,18 +42,20 @@ func main() {
 	g := gate.NewGate(store, signer)
 
 	scoreStore := leaderboard.NewRedisScoreStore(redisClient)
-	leaderboardHandler := leaderboard.NewHandler(scoreStore, cfg.LeaderboardAPISecret)
+	leaderboardHandler := leaderboard.NewHandler(scoreStore, cfg.LeaderboardAPISecret, scoreStore)
 
 	app := &App{
-		store:              store,
-		gate:               g,
-		frontendDir:        cfg.FrontendDir,
-		ngrokAPIURL:        cfg.NgrokAPIURL,
-		qrWindowTTL:        cfg.QRWindowTTL,
-		httpClient:         &http.Client{Timeout: 3 * time.Second},
-		leaderboardHandler: leaderboardHandler,
-		leaderboardSecret:  cfg.LeaderboardAPISecret,
-		gitRepoPath:        cfg.GitRepoPath,
+		store:                store,
+		gate:                 g,
+		frontendDir:          cfg.FrontendDir,
+		ngrokAPIURL:          cfg.NgrokAPIURL,
+		qrWindowTTL:          cfg.QRWindowTTL,
+		httpClient:           &http.Client{Timeout: 3 * time.Second},
+		leaderboardHandler:   leaderboardHandler,
+		leaderboardSecret:    cfg.LeaderboardAPISecret,
+		leaderboardAssetsDir: cfg.LeaderboardAssetsDir,
+		commitsServiceURL:    cfg.CommitsServiceURL,
+		scoresServiceURL:     cfg.ScoresServiceURL,
 	}
 
 	errc := make(chan error, 2)
@@ -81,7 +81,9 @@ type Config struct {
 	NgrokAPIURL          string
 	FrontendDir          string
 	LeaderboardAPISecret string
-	GitRepoPath          string
+	LeaderboardAssetsDir string
+	CommitsServiceURL    string
+	ScoresServiceURL     string
 }
 
 func loadConfig() Config {
@@ -99,7 +101,15 @@ func loadConfig() Config {
 		NgrokAPIURL:          envOr("NGROK_API_URL", "http://ngrok:4040/api/tunnels"),
 		FrontendDir:          envOr("FRONTEND_DIR", "/frontend"),
 		LeaderboardAPISecret: envOr("LEADERBOARD_API_SECRET", "dev-only-change-me"),
-		GitRepoPath:          envOr("GIT_REPO_PATH", "/repo"),
+		LeaderboardAssetsDir: envOr("LEADERBOARD_ASSETS_DIR", "/leaderboard-assets"),
+		// CommitsServiceURL is the base URL of the commits microservice, reachable
+		// from the browser. Default is localhost:8082 for local dev; override via
+		// COMMITS_SERVICE_URL in docker-compose or .env for demo environments.
+		CommitsServiceURL: envOr("COMMITS_SERVICE_URL", "http://localhost:8082"),
+		// ScoresServiceURL is the base URL of the scores microservice, reachable
+		// from the browser. Default is localhost:8083 for local dev; override via
+		// SCORES_SERVICE_URL in docker-compose or .env for demo environments.
+		ScoresServiceURL: envOr("SCORES_SERVICE_URL", "http://localhost:8083"),
 	}
 }
 
@@ -124,15 +134,17 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 
 // App holds the dependencies shared by both listeners' handlers.
 type App struct {
-	store              gate.WindowStore
-	gate               *gate.Gate
-	frontendDir        string
-	ngrokAPIURL        string
-	qrWindowTTL        time.Duration
-	httpClient         *http.Client
-	leaderboardHandler http.Handler
-	leaderboardSecret  string
-	gitRepoPath        string
+	store                gate.WindowStore
+	gate                 *gate.Gate
+	frontendDir          string
+	ngrokAPIURL          string
+	qrWindowTTL          time.Duration
+	httpClient           *http.Client
+	leaderboardHandler   http.Handler
+	leaderboardSecret    string
+	leaderboardAssetsDir string
+	commitsServiceURL    string
+	scoresServiceURL     string
 }
 
 // ungatedMux serves the game with no access check at all (FR-004), plus the
@@ -154,8 +166,8 @@ func (a *App) ungatedMux() http.Handler {
 	mux.HandleFunc("/host", a.handleHost)
 	mux.HandleFunc("/host/rotate", a.handleHostRotate)
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
-	mux.HandleFunc("/leaderboard", handleLeaderboardPage)
-	mux.HandleFunc("/api/commits", a.handleCommits)
+	mux.HandleFunc("/leaderboard", a.handleLeaderboardPage)
+	mux.Handle("/leaderboard-assets/", http.StripPrefix("/leaderboard-assets/", http.FileServer(http.Dir(a.leaderboardAssetsDir))))
 	return mux
 }
 
@@ -175,8 +187,8 @@ func (a *App) gatedMux() http.Handler {
 	mux.HandleFunc("/repo-qr.png", handleRepoQRPNG)
 	mux.HandleFunc("/api/ping", handlePing)
 	mux.Handle("/api/leaderboard/scores", a.leaderboardHandler)
-	mux.HandleFunc("/leaderboard", handleLeaderboardPage)
-	mux.HandleFunc("/api/commits", a.handleCommits)
+	mux.HandleFunc("/leaderboard", a.handleLeaderboardPage)
+	mux.Handle("/leaderboard-assets/", http.StripPrefix("/leaderboard-assets/", http.FileServer(http.Dir(a.leaderboardAssetsDir))))
 	return mux
 }
 
@@ -377,14 +389,14 @@ func (a *App) handleHostRotate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/host", http.StatusSeeOther)
 }
 
-// leaderboardPageHTML is the leaderboard display page (specs/004-leaderboard-page),
-// meant for an unattended wall/booth display. It fetches GET /api/leaderboard/scores
-// once on load (FR-002 through FR-004), then keeps polling it on an interval for as
-// long as the page stays open (FR-006) — a failed poll leaves the currently rendered
-// standings untouched rather than clearing or erroring (FR-007), and a poll returning
-// zero standings shows an explicit empty-state message (FR-008) rather than an empty
-// list. No credential is sent or required (FR-011, FR-013).
-const leaderboardPageHTML = `<!DOCTYPE html>
+// leaderboardPageTemplate is the leaderboard display page, meant for an unattended
+// wall/booth display. The standings column is rendered by a React component
+// (013-leaderboard-scores-microservice) that subscribes to the scores-service SSE
+// stream. The commit feed column is rendered by a React component
+// (012-git-commits-microservice) that subscribes to the commits-service SSE stream.
+// {{.ScoresServiceURL}} and {{.CommitsServiceURL}} are injected at render time so the
+// URLs are configurable across demo environments.
+const leaderboardPageTemplate = `<!DOCTYPE html>
 <html>
 <head>
 <title>Crossy Whale - Leaderboard</title>
@@ -408,22 +420,25 @@ const leaderboardPageHTML = `<!DOCTYPE html>
   /* Middle column: 32% of layout — leaderboard standings */
   .right-col { flex: 0 0 32%; display: flex; flex-direction: column; }
   h2 { margin: 0 0 0.75rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
-  #standings { list-style: none; padding: 0; margin: 0; }
-  #standings li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.25rem; }
-  #standings li:first-child { border-top: 1px solid rgba(255,255,255,0.1); }
-  #standings .rank { opacity: 0.5; min-width: 2.5rem; font-size: 1rem; }
-  #standings .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #standings .score { font-weight: bold; font-variant-numeric: tabular-nums; }
-  #status { opacity: 0.65; font-size: 1rem; margin: 0.5rem 0 0; }
+  #scores-root ul { list-style: none; padding: 0; margin: 0; }
+  #scores-root li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.25rem; }
+  #scores-root li:first-child { border-top: 1px solid rgba(255,255,255,0.1); }
+  #scores-root .rank { opacity: 0.5; min-width: 2.5rem; font-size: 1rem; }
+  #scores-root .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #scores-root .score { font-weight: bold; font-variant-numeric: tabular-nums; }
+  #scores-root p { opacity: 0.65; font-size: 1rem; margin: 0.5rem 0 0; }
   /* Right column: 20% of layout — recent commits */
   .commit-col { flex: 0 0 20%; display: flex; flex-direction: column; min-width: 0; }
   .commit-col h2 { margin: 0 0 0.75rem; }
   #commits { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
   #commits li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
-  #commits .chash { font-family: monospace; font-weight: bold; opacity: 0.9; }
-  #commits .cdate { opacity: 0.55; display: block; margin-top: 0.15rem; }
-  #commits .cmsg { display: block; margin-top: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #commit-status { opacity: 0.55; font-size: 0.8rem; margin: 0.25rem 0 0; }
+  #commits-root ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  #commits-root li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
+  #commits-root .chash { font-family: monospace; font-weight: bold; opacity: 0.9; display: block; }
+  #commits-root .cauthor { opacity: 0.7; font-size: 0.68rem; display: block; margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #commits-root .cdate { opacity: 0.55; display: block; margin-top: 0.15rem; }
+  #commits-root .cmsg { display: block; margin-top: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #commits-root p { opacity: 0.55; font-size: 0.8rem; margin: 0.25rem 0 0; }
   @media (max-width: 900px) { .layout { flex-direction: column; width: 100%; } .left-col, .right-col, .commit-col { flex: none; width: 100%; } }
 </style>
 </head>
@@ -447,63 +462,15 @@ const leaderboardPageHTML = `<!DOCTYPE html>
   </div>
   <div class="right-col">
     <h2>Standings</h2>
-    <ul id="standings"></ul>
-    <p id="status">Loading standings&hellip;</p>
+    <div id="scores-root"></div>
   </div>
   <div class="commit-col">
     <h2>Recent commits</h2>
-    <ul id="commits"></ul>
-    <p id="commit-status">Loading&hellip;</p>
+    <div id="commits-root"></div>
   </div>
 </div>
 <script>
 (function () {
-  var POLL_INTERVAL_MS = 4000;
-  var statusEl = document.getElementById('status');
-  var listEl = document.getElementById('standings');
-  var hasRenderedOnce = false;
-
-  function escapeText(value) {
-    var div = document.createElement('div');
-    div.textContent = value;
-    return div.innerHTML;
-  }
-
-  function render(standings) {
-    if (standings.length === 0) {
-      listEl.innerHTML = '';
-      statusEl.textContent = 'No scores yet — be the first to play!';
-      statusEl.style.display = '';
-      return;
-    }
-    statusEl.style.display = 'none';
-    listEl.innerHTML = standings.map(function (s) {
-      return '<li><span class="rank">#' + s.rank + '</span>' +
-        '<span class="name">' + escapeText(s.name) + '</span>' +
-        '<span class="score">' + s.score + '</span></li>';
-    }).join('');
-  }
-
-  function refresh() {
-    fetch('/api/leaderboard/scores')
-      .then(function (resp) {
-        if (!resp.ok) { throw new Error('leaderboard fetch failed: ' + resp.status); }
-        return resp.json();
-      })
-      .then(function (data) {
-        render(data.standings || []);
-        hasRenderedOnce = true;
-      })
-      .catch(function () {
-        if (!hasRenderedOnce) {
-          statusEl.textContent = 'Loading standings…';
-        }
-      });
-  }
-
-  refresh();
-  setInterval(refresh, POLL_INTERVAL_MS);
-
   // QR polling: retry if the image failed to load (ngrok not ready yet).
   var qrImg = document.getElementById('qr-img');
   setInterval(function () {
@@ -528,43 +495,6 @@ const leaderboardPageHTML = `<!DOCTYPE html>
 
   // Auto-rotate every 60 seconds so the QR code stays fresh.
   setInterval(rotateQR, 60000);
-
-  // Commit feed: poll /api/commits every 30 s.
-  var commitListEl = document.getElementById('commits');
-  var commitStatusEl = document.getElementById('commit-status');
-
-  function renderCommits(commits) {
-    if (!commits || commits.length === 0) {
-      commitStatusEl.textContent = 'No commits found.';
-      commitStatusEl.style.display = '';
-      commitListEl.innerHTML = '';
-      return;
-    }
-    commitStatusEl.style.display = 'none';
-    commitListEl.innerHTML = commits.map(function (c) {
-      return '<li>' +
-        '<span class="chash">' + escapeText(c.hash) + '</span>' +
-        '<span class="cdate">' + escapeText(c.date) + '</span>' +
-        '<span class="cmsg">' + escapeText(c.message) + '</span>' +
-        '</li>';
-    }).join('');
-  }
-
-  function refreshCommits() {
-    fetch('/api/commits')
-      .then(function (resp) {
-        if (!resp.ok) { throw new Error('commits fetch failed: ' + resp.status); }
-        return resp.json();
-      })
-      .then(renderCommits)
-      .catch(function () {
-        commitStatusEl.textContent = 'Commits unavailable.';
-        commitStatusEl.style.display = '';
-      });
-  }
-
-  refreshCommits();
-  setInterval(refreshCommits, 30000);
 })();
 </script>
 <script>
@@ -583,16 +513,45 @@ const leaderboardPageHTML = `<!DOCTYPE html>
   }, 2000);
 })();
 </script>
+<!-- React components: scores feed (013-leaderboard-scores-microservice) and
+     commit feed (012-git-commits-microservice).
+     Bundles are vendored under frontend/leaderboard/ (see ATTRIBUTION.md). -->
+<script src="/leaderboard-assets/react.production.min.js"></script>
+<script src="/leaderboard-assets/react-dom.production.min.js"></script>
+<script type="module">
+import { ScoresComponent } from '/leaderboard-assets/scores-component.js';
+const scoresRoot = ReactDOM.createRoot(document.getElementById('scores-root'));
+scoresRoot.render(React.createElement(ScoresComponent, { scoresServiceURL: '{{.ScoresServiceURL}}' }));
+</script>
+<script type="module">
+import { CommitsComponent } from '/leaderboard-assets/commits-component.js';
+const root = ReactDOM.createRoot(document.getElementById('commits-root'));
+root.render(React.createElement(CommitsComponent, { commitsServiceURL: '{{.CommitsServiceURL}}' }));
+</script>
 </body>
 </html>
 `
 
-// handleLeaderboardPage serves the leaderboard display page. It has no dependency on
-// App state — the page's own script does all the data fetching client-side — so it is
-// a plain function rather than an App method.
-func handleLeaderboardPage(w http.ResponseWriter, r *http.Request) {
+// handleLeaderboardPage serves the leaderboard display page, rendering the
+// leaderboardPageTemplate with the configured service URLs so the React
+// components connect to the correct microservice endpoints.
+func (a *App) handleLeaderboardPage(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := template.New("leaderboard").Parse(leaderboardPageTemplate)
+	if err != nil {
+		http.Error(w, "failed to render leaderboard", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(leaderboardPageHTML))
+	data := struct {
+		CommitsServiceURL string
+		ScoresServiceURL  string
+	}{
+		CommitsServiceURL: a.commitsServiceURL,
+		ScoresServiceURL:  a.scoresServiceURL,
+	}
+	if err := tmpl.Execute(w, data); err != nil {
+		log.Printf("render leaderboard: %v", err)
+	}
 }
 
 // ngrokTunnelsResponse is the shape of ngrok's local inspection API
@@ -653,61 +612,6 @@ func handleRepoQRPNG(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(png)
-}
-
-// commitEntry is the JSON shape returned by /api/commits.
-type commitEntry struct {
-	Hash    string `json:"hash"`
-	Date    string `json:"date"`
-	Message string `json:"message"`
-}
-
-// handleCommits reads up to 20 recent commits from the git repo at a.gitRepoPath
-// and returns them as JSON, newest first.
-func (a *App) handleCommits(w http.ResponseWriter, r *http.Request) {
-	repo, err := gogit.PlainOpen(a.gitRepoPath)
-	if err != nil {
-		http.Error(w, "git repo unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	ref, err := repo.Head()
-	if err != nil {
-		http.Error(w, "git repo has no HEAD", http.StatusServiceUnavailable)
-		return
-	}
-	iter, err := repo.Log(&gogit.LogOptions{From: ref.Hash()})
-	if err != nil {
-		http.Error(w, "failed to read git log", http.StatusInternalServerError)
-		return
-	}
-	defer iter.Close()
-
-	const limit = 20
-	entries := make([]commitEntry, 0, limit)
-	_ = iter.ForEach(func(c *object.Commit) error {
-		if len(entries) >= limit {
-			return fmt.Errorf("done")
-		}
-		msg := c.Message
-		if nl := len(msg); nl > 0 {
-			if idx := 0; idx < nl {
-				for idx < nl && msg[idx] != '\n' {
-					idx++
-				}
-				msg = msg[:idx]
-			}
-		}
-		entries = append(entries, commitEntry{
-			Hash:    c.Hash.String()[:7],
-			Date:    c.Author.When.UTC().Format("2006-01-02 15:04"),
-			Message: msg,
-		})
-		return nil
-	})
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(entries)
 }
 
 var errNoPublicTunnel = &noPublicTunnelError{}

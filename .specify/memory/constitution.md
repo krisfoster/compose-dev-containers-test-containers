@@ -1,5 +1,67 @@
 <!--
 Sync Impact Report
+Version change: 1.3.0 -> 1.4.0
+Modified principles: (none renamed or removed)
+Added sections:
+  Technology Stack: new "Permanent Routing Layer carve-out" permitting a dedicated reverse-proxy
+    service (nginx:alpine or DHI equivalent) as a permanent single-ingress layer in the compose
+    stack, distinct from the Interim Static Hosting carve-out. The routing service's permitted
+    roles are static file serving (game assets, leaderboard bundles) and transparent proxying
+    to Go services. It MUST contain no business logic. This supersedes the Interim Static Hosting
+    carve-out's "bridge, not permanent" restriction for configurations where the routing layer
+    is the intentional long-term architecture.
+Removed sections: (none)
+Rationale: Feature 014-nginx-front-door adds nginx as a permanent front-door routing service
+  alongside the existing Go app backend. The Go app continues to own all gate enforcement,
+  template rendering, and API logic. nginx routes /play to the Go gated port, proxies APIs and
+  dynamic pages to the ungated Go port, and serves game + leaderboard static assets directly.
+  The existing "Interim Static Hosting carve-out" was scoped to "while no Go backend exists"
+  and explicitly forbids permanent co-residence — this amendment extends the permitted model
+  to include permanent routing layers, provided they contain no business logic.
+Templates requiring updates:
+  OK  .specify/templates/plan-template.md: Constitution Check placeholder is design-compatible;
+      no constitution-derived language to update
+  OK  .specify/templates/spec-template.md: no constitution reference; no update needed
+  OK  .specify/templates/tasks-template.md: no constitution reference; no update needed
+Follow-up TODOs:
+  TODO(ROUTING-LAYER-SCOPE): If the routing layer grows beyond simple routing (e.g., adds rate
+    limiting, auth delegation, or per-route transformations), revisit whether it has become a
+    business-logic layer and whether further amendments are required.
+  TODO(INTERIM-HOSTING-SUNSET): The original Interim Static Hosting carve-out was added for
+    001-host-webapp-ngrok. Once nginx is in place as the permanent routing layer, the interim
+    carve-out should be retired (its purpose is superseded by this amendment).
+-->
+
+<!--
+Sync Impact Report
+Version change: 1.2.0 -> 1.3.0
+Modified principles: (none renamed or removed)
+Added sections:
+  Technology Stack: new "Leaderboard React carve-out" permitting React 18 + ReactDOM 18 (vendored
+    UMD production bundles, no build step) to be used in the leaderboard page's commit-feed
+    component, with an explicit scope condition (React is only used in the leaderboard page, not
+    in the game frontend, and is vendored — no CDN runtime dependency or npm build pipeline is
+    introduced).
+Removed sections: (none)
+Rationale: Feature 012-git-commits-microservice introduces a React component on the leaderboard
+  page to consume the Server-Sent Events stream from the new commits microservice. The Technology
+  Stack section listed only "three.js r160 loaded via ES-module importmap" for the frontend with
+  no carve-out for the leaderboard page using a different library. This amendment adds an explicit
+  carve-out so that React is recognised as an optional leaderboard-only frontend library without
+  undermining the game frontend's constraint.
+Templates requiring updates:
+  OK  .specify/templates/plan-template.md: Constitution Check placeholder is design-compatible;
+      no constitution-derived language to update
+  OK  .specify/templates/spec-template.md: no constitution reference; no update needed
+  OK  .specify/templates/tasks-template.md: no constitution reference; no update needed
+Follow-up TODOs:
+  TODO(REACT-LEADERBOARD-SCOPE): If React is adopted beyond the leaderboard commits component
+    (e.g., the standings column or the game itself), revisit this carve-out and consider a more
+    general amendment.
+-->
+
+<!--
+Sync Impact Report
 Version change: 1.1.0 -> 1.2.0
 Modified principles: (none renamed or removed)
 Added sections:
@@ -150,6 +212,25 @@ that will eventually own that responsibility is built. Once a Go backend is intr
 surface, that surface's interim static webserver MUST be retired in the same phase that lands the
 backend — this carve-out is a bridge, not a permanent parallel serving path.
 
+**Leaderboard React carve-out**: React 18 + ReactDOM 18 (vendored as pre-built UMD production
+bundles, no build step, no CDN runtime dependency) MAY be used in the leaderboard page's
+commit-feed component, but only for the leaderboard page and only in vendored form. This carve-out
+does not extend to the game frontend (`frontend/game/`) or to any build-pipeline-based usage of
+React. The React bundles MUST be vendored under `frontend/leaderboard/` and served by the existing
+Go `app` backend — they are not a separate hosting surface.
+
+**Permanent Routing Layer carve-out**: A dedicated reverse-proxy service (for example,
+`dhi.io/nginx:1-alpine3.24`) MAY be added as a permanent compose service acting as the single
+public ingress for the demo stack. Unlike the Interim Static Hosting carve-out, this service
+co-exists permanently with the Go backend rather than bridging a pre-backend gap. The routing
+service's permitted scope is strictly: (a) serving game and leaderboard static assets directly
+from files copied into its image at build time; (b) reverse-proxying requests that require
+business logic to the appropriate Go service or microservice via `proxy_pass`. The routing service
+MUST NOT implement any business logic — no gate enforcement, no token generation, no session
+management, no request rewriting beyond path-based routing. Gate enforcement MUST remain in the
+Go app and is reached by proxying to the Go gated internal port. This carve-out does not extend
+to OpenResty, Caddy, Traefik, or other routing platforms unless amended.
+
 ## Development Workflow
 
 Design docs (`crossy.md`, `project.md`) precede implementation. Structured phase work uses the
@@ -190,4 +271,4 @@ plan's Complexity Tracking section before it is accepted.
 
 Runtime guidance for day-to-day work lives in `crossy.md` at the repo root.
 
-**Version**: 1.2.0 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-07
+**Version**: 1.4.0 | **Ratified**: 2026-07-06 | **Last Amended**: 2026-07-09

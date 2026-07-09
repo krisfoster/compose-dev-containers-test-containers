@@ -6,6 +6,6 @@ version: 2
 root_cas: /etc/ssl/certs/ca-bundle.crt
 tunnels:
   whale-runner:
-    addr: http://app:8081
+    addr: http://nginx:80
     proto: http
     domain: dockerdemo.ngrok.app
