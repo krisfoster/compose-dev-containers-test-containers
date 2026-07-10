@@ -4,36 +4,35 @@
 <title>Crossy Whale - Leaderboard</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
-  body { font-family: sans-serif; background: #0b1b2b; color: #fff; margin: 0; padding: 2rem 1.5rem; }
+  body { font-family: sans-serif; background: #0b1b2b; color: #fff; margin: 0; padding: 2rem 3rem; }
   h1 { text-align: center; margin-top: 0; }
-  /* Outer wrapper: 80% of viewport, centred */
-  .layout { display: flex; flex-direction: row; align-items: flex-start; gap: 2rem; width: 80%; margin: 0 auto; }
-  /* Left column: 48% of layout — QR codes + gif */
-  .left-col { flex: 0 0 48%; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
-  /* Two QR codes side by side, each ~45% of the left column */
-  .qr-row { display: flex; flex-direction: row; gap: 2%; width: 100%; }
-  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; flex: 0 0 45%; min-width: 0; }
-  .qr-wrap img.qr { border-radius: 0.5rem; background: #fff; width: 100%; height: auto; }
-  .qr-wrap h2 { margin: 0 0 0.4rem; font-size: 1rem; text-align: center; }
+  /* Two equal columns with breathing room on either side */
+  .layout { display: flex; flex-direction: row; align-items: flex-start; gap: 3rem; }
+  /* Left column: Play QR → gif → Repo QR, all stretched to column width */
+  .left-col { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 1.5rem; }
+  .qr-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; width: 100%; }
+  .qr-wrap img.qr { border-radius: 0.5rem; background: #fff; width: 40%; height: auto; display: block; }
+  .qr-wrap h2 { margin: 0 0 0.4rem; font-size: 1.1rem; text-align: left; }
   .qr-wrap button { margin-top: 0.25rem; padding: 0.4rem 1rem; border: 1px solid rgba(255,255,255,0.25); border-radius: 0.4rem; background: transparent; color: #fff; cursor: pointer; font-size: 0.85rem; }
   .qr-wrap button:hover { background: rgba(255,255,255,0.1); }
-  /* Gif at 90% of the left column */
-  .demo-gif { width: 90%; border-radius: 0.5rem; display: block; }
-  /* Middle column: 32% of layout — leaderboard standings */
-  .right-col { flex: 0 0 32%; display: flex; flex-direction: column; }
-  h2 { margin: 0 0 0.75rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
+  .qr-wrap--play { flex-direction: row; align-items: center; gap: 1.25rem; }
+  .qr-wrap--play img.qr { width: 40%; flex-shrink: 0; }
+  .qr-play-label { display: flex; flex-direction: column; gap: 0.5rem; }
+  .qr-play-label h2 { margin: 0; text-align: left; }
+  .demo-gif { width: 80%; border-radius: 0.5rem; display: block; }
+  /* Right column: leaderboard standings */
+  .right-col { flex: 1; display: flex; flex-direction: column; }
+  h2 { margin: 0 0 0.75rem; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
   #scores-root ul { list-style: none; padding: 0; margin: 0; }
-  #scores-root li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.25rem; }
+  #scores-root li { display: flex; align-items: baseline; gap: 1rem; padding: 0.85rem 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 1.75rem; }
   #scores-root li:first-child { border-top: 1px solid rgba(255,255,255,0.1); }
-  #scores-root .rank { opacity: 0.5; min-width: 2.5rem; font-size: 1rem; }
+  #scores-root .rank { opacity: 0.5; min-width: 3rem; font-size: 1.4rem; }
   #scores-root .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #scores-root .score { font-weight: bold; font-variant-numeric: tabular-nums; }
-  #scores-root p { opacity: 0.65; font-size: 1rem; margin: 0.5rem 0 0; }
-  /* Right column: 20% of layout — recent commits */
-  .commit-col { flex: 0 0 20%; display: flex; flex-direction: column; min-width: 0; }
+  #scores-root p { opacity: 0.65; font-size: 1.1rem; margin: 0.5rem 0 0; }
+  /* Optional commits column */
+  .commit-col { flex: 0 0 22rem; display: flex; flex-direction: column; min-width: 0; }
   .commit-col h2 { margin: 0 0 0.75rem; }
-  #commits { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-  #commits li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
   #commits-root ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
   #commits-root li { background: rgba(255,255,255,0.07); border-radius: 0.4rem; padding: 0.5rem 0.6rem; font-size: 0.72rem; line-height: 1.4; min-width: 0; }
   #commits-root .chash { font-family: monospace; font-weight: bold; opacity: 0.9; display: block; }
@@ -41,26 +40,28 @@
   #commits-root .cdate { opacity: 0.55; display: block; margin-top: 0.15rem; }
   #commits-root .cmsg { display: block; margin-top: 0.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #commits-root p { opacity: 0.55; font-size: 0.8rem; margin: 0.25rem 0 0; }
-  @media (max-width: 900px) { .layout { flex-direction: column; width: 100%; } .left-col, .right-col, .commit-col { flex: none; width: 100%; } }
+  @media (max-width: 900px) { .layout { flex-direction: column; } .left-col, .right-col, .commit-col { flex: none; width: 100%; } }
 </style>
 </head>
 <body>
 <h1>🐋 Crossy Whale Leaderboard 🐋</h1>
 <div class="layout">
   <div class="left-col">
-    <div class="qr-row">
-      <div class="qr-wrap">
+    <div class="qr-wrap qr-wrap--play">
+      <img class="qr" id="qr-img" src="/qr.png" alt="QR code to join"
+           onerror="this.dataset.err='1'" width="280" height="280">
+      <div class="qr-play-label">
         <h2>Scan to play</h2>
-        <img class="qr" id="qr-img" src="/qr.png" alt="QR code to join"
-             onerror="this.dataset.err='1'" width="280" height="280">
         <button id="qr-refresh">Refresh QR</button>
-      </div>
-      <div class="qr-wrap">
-        <h2>View the repo</h2>
-        <img class="qr" src="/repo-qr.png" alt="QR code to GitHub repo" width="280" height="280">
       </div>
     </div>
     <img class="demo-gif" src="/container-obstacles.gif" alt="Crossy Whale gameplay">
+    <div class="qr-wrap qr-wrap--play">
+      <img class="qr" src="/repo-qr.png" alt="QR code to GitHub repo" width="280" height="280">
+      <div class="qr-play-label">
+        <h2>View the repo</h2>
+      </div>
+    </div>
   </div>
   <div class="right-col">
     <h2>Standings</h2>
