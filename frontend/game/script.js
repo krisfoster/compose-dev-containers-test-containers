@@ -216,13 +216,19 @@ function checkOrientation() {
   prompt.style.display = window.innerWidth < window.innerHeight ? 'flex' : 'none';
 }
 
+// iPhones get an additional zoom-out so more of the play area is visible.
+const IOS_PHONE_ZOOM_SCALE = 0.62;
+const isIosPhone = /iPhone/.test(navigator.userAgent);
+
 // In portrait mode the screen is too narrow to see enough of the scene.
 // Zoom the camera out so ~7 lanes are visible across the width, matching
 // roughly what you'd see in landscape. In landscape the zoom stays at 1.
+// On iOS phones an extra scale-down gives a wider field of view.
 function getCameraZoom() {
-  if (window.innerWidth >= window.innerHeight) return 1;
-  const targetLanes = 7;
-  return window.innerWidth / (targetLanes * positionWidth * zoom);
+  const base = window.innerWidth >= window.innerHeight
+    ? 1
+    : window.innerWidth / (7 * positionWidth * zoom);
+  return isIosPhone ? base * IOS_PHONE_ZOOM_SCALE : base;
 }
 
 function onResize() {
