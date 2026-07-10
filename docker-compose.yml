@@ -85,6 +85,9 @@ services:
       # enabling live reload (015-extract-html-templates). In production the templates
       # are baked into the image via COPY in app/Dockerfile.
       - TEMPLATES_DIR=/templates
+      # COMMITS_SHOW controls whether the recent commits column is rendered on the
+      # leaderboard page. Defaults to hidden/collapsed. Set to "true" in .env to enable.
+      - COMMITS_SHOW=${COMMITS_SHOW:-}
     # ports: publishes container port 8080 to the host for direct developer access
     # (e.g. debugging without nginx in the path). The primary public entry point is
     # nginx on port 80. WEB_PORT can be overridden via .env.

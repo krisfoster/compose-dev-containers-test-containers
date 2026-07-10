@@ -66,10 +66,10 @@
     <h2>Standings</h2>
     <div id="scores-root"></div>
   </div>
-  <div class="commit-col">
+  {{if .ShowCommits}}<div class="commit-col">
     <h2>Recent commits</h2>
     <div id="commits-root"></div>
-  </div>
+  </div>{{end}}
 </div>
 <script>
 (function () {
@@ -123,10 +123,10 @@ import { ScoresComponent } from '/leaderboard-assets/scores-component.js';
 const scoresRoot = ReactDOM.createRoot(document.getElementById('scores-root'));
 scoresRoot.render(React.createElement(ScoresComponent, { scoresServiceURL: '{{.ScoresServiceURL}}' }));
 </script>
-<script type="module">
+{{if .ShowCommits}}<script type="module">
 import { CommitsComponent } from '/leaderboard-assets/commits-component.js';
 const root = ReactDOM.createRoot(document.getElementById('commits-root'));
 root.render(React.createElement(CommitsComponent, { commitsServiceURL: '{{.CommitsServiceURL}}' }));
-</script>
+</script>{{end}}
 </body>
 </html>

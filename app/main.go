@@ -50,6 +50,7 @@ func main() {
 		commitsServiceURL: cfg.CommitsServiceURL,
 		scoresServiceURL:  cfg.ScoresServiceURL,
 		qrServiceURL:      cfg.QRServiceURL,
+		showCommits:       cfg.ShowCommits,
 	}
 
 	// Fail fast if any page template is missing — better to surface this at
@@ -83,6 +84,7 @@ type Config struct {
 	CommitsServiceURL string
 	ScoresServiceURL  string
 	QRServiceURL      string
+	ShowCommits       bool
 }
 
 func loadConfig() Config {
@@ -114,6 +116,9 @@ func loadConfig() Config {
 		// only from within the Compose network. Default is localhost:8084 for local dev;
 		// set to http://qr-service:8084 in docker-compose (018-qr-code-microservice).
 		QRServiceURL: envOr("QR_SERVICE_URL", "http://localhost:8084"),
+		// ShowCommits controls whether the recent commits column is rendered on the
+		// leaderboard page. Set COMMITS_SHOW=true to enable; hidden and collapsed by default.
+		ShowCommits: os.Getenv("COMMITS_SHOW") == "true",
 	}
 }
 
@@ -148,6 +153,7 @@ type App struct {
 	commitsServiceURL string
 	scoresServiceURL  string
 	qrServiceURL      string
+	showCommits       bool
 	// templateVersion is atomically incremented by watchTemplates whenever any
 	// page template file on disk changes. handlePing incorporates it into the
 	// response id so the browser auto-reloads within its next poll cycle.
@@ -312,9 +318,11 @@ func (a *App) handleLeaderboardPage(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		CommitsServiceURL string
 		ScoresServiceURL  string
+		ShowCommits       bool
 	}{
 		CommitsServiceURL: a.commitsServiceURL,
 		ScoresServiceURL:  a.scoresServiceURL,
+		ShowCommits:       a.showCommits,
 	}
 	if err := tmpl.Execute(w, data); err != nil {
 		log.Printf("template execute error %s: %v", p, err)
