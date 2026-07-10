@@ -724,6 +724,29 @@ window.addEventListener("keydown", event => {
   }
 });
 
+if (window.matchMedia('(pointer: coarse)').matches) {
+  renderer.domElement.addEventListener('touchstart', (e) => {
+    const touch = e.touches[0];
+    const tapX = touch.clientX;
+    const tapY = touch.clientY;
+
+    const ndc = whale.position.clone().project(camera);
+    const whaleScreenX = (ndc.x + 1) / 2 * window.innerWidth;
+    const whaleScreenY = (-ndc.y + 1) / 2 * window.innerHeight;
+
+    const dx = tapX - whaleScreenX;
+    const dy = tapY - whaleScreenY;
+
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+
+    const direction = Math.abs(dx) > Math.abs(dy)
+      ? (dx > 0 ? 'right' : 'left')
+      : (dy < 0 ? 'forward' : 'backward');
+
+    move(direction);
+  });
+}
+
 function move(direction) {
   if (!nameEntered) return;
   const finalPositions = moves.reduce((position,move) => {
